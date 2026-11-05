@@ -102,3 +102,7 @@ The server keeps its web assets in memory, so restart it with `/node-code:codeba
 `test/fixtures/hook-payloads.jsonl` holds real hook payloads captured from Claude Code 2.1.318. Add `&perf=1` to the page URL to record frame times and expose `window.__nc` for debugging.
 
 `web/vendor/` contains `d3-force` 3.0.1 and its dependencies (ISC license; license files alongside).
+
+## License
+
+MIT, see [LICENSE](LICENSE). The bundled d3 files in `web/vendor/` are ISC licensed.
