@@ -46,7 +46,7 @@ The server also exits on its own after 30 minutes with no page open and no activ
 
 - **Pan** by dragging the background, **zoom** with the wheel or a pinch, **drag** nodes to move them.
 - **Hover** a node for its full path. Labels also appear when you zoom in.
-- **Click a file** to open its details and show its dependency edges. **Click a folder** to collapse or expand it. **Click "N more"** to show more files in a very large folder.
+- **Click a file** to open its details and show its dependency edges. The panel also shows the file's contents and, in a git repo, what changed since the last commit (Claude's edits and your own), with changed lines marked. This is read from disk by the local server and uses no model tokens. **Click a folder** to collapse or expand it. **Click "N more"** to show more files in a very large folder.
 - **Click a feed entry** to jump to its node.
 - **Hide heat** or **Reset heat** at the bottom left. Resetting keeps the read and edit counts in the details panel.
 - **Pause motion** at the bottom left stops the graph's slow ambient drift; **Resume motion** starts it again. The choice is remembered in that browser. Motion starts paused if Reduce motion is on in your system settings, and it pauses while the tab is hidden.
@@ -71,6 +71,17 @@ Node size and glow grow with the session's touch count. Grep, Glob and read-only
 | --- | --- | --- |
 | JavaScript and TypeScript | `.js .jsx .mjs .cjs .ts .tsx .mts .cts` | ESM, CommonJS, dynamic imports, re-exports, `.js` to `.ts` mapping, index files, `paths` and `baseUrl` from the root `tsconfig.json` |
 | Python | `.py .pyi` | `import`, `from`, multi-line and relative imports, `__all__`, `src/` layouts, sibling scripts |
+| C and C++ | `.c .h .cc .cpp .cxx .hh .hpp .hxx` | `#include "..."` beside the file, in `include/` and `src/`, or by a unique path suffix; `<...>` includes only when they match a repo file |
+| Go | `.go` | Package imports under any `go.mod` module in the repo, to that package's non-test files |
+| Rust | `.rs` | `mod x;`, `use crate::`, `super::`, `self::` and bare module paths, nested `{}` groups |
+| Java, Kotlin, Scala | `.java .kt .kts .scala` | Class, static, wildcard and Scala selector imports, through each file's `package` |
+| C# | `.cs` | `using`, `global using`, `using static` and aliases, through each file's `namespace` |
+| Ruby | `.rb` | `require_relative`, and `require` from `lib/` |
+| PHP | `.php` | `require` and `include` (also with `__DIR__`), `use` through the `composer.json` PSR-4 map |
+| Shell | `.sh .bash .zsh` | `source` and `.`, with `$DIR/`-style paths taken as the script's folder |
+| CSS, SCSS, Less | `.css .scss .less` | `@import`, `@use`, `@forward`, Sass partials and index files |
+| HTML | `.html .htm` | Local `<script src>` and `<link href>` |
+| Vue and Svelte | `.vue .svelte` | Imports in `<script>` blocks |
 
 Other files appear in the graph with their language name but no dependency data.
 
@@ -78,7 +89,8 @@ To add a language, write a parser and a resolver and register them in `parsers/r
 
 ## Known limits
 
-- **Import parsing is regex-based.** Computed imports don't resolve, and neither do monorepo package links beyond the root `tsconfig.json`. Files over 512 KB and minified files are not parsed.
+- **Import parsing is regex-based.** Computed imports don't resolve, and neither do monorepo package links beyond the root `tsconfig.json`. Files over 512 KB and minified files are not parsed. Swift is not parsed, since it imports whole modules, and neither is indented Sass (`.sass`). One import shows at most 50 targets, so a C# namespace or Go package with more files is cut off.
+- **Diffs need git.** The panel diffs against `HEAD`, so outside a git repo, or before the first commit, it shows the file without changes. Files over 512 KB show only their first 512 KB, and binary files are not shown.
 - **Bash attribution is best effort.** Claude Code's `bashEditDiff` field is used when present, but it is in public beta and did not appear in testing. The fallback rescans the repo after each Bash call and credits changes to that call, so an unrelated change made in the same moment gets credited too. Changes from background commands appear within 30 seconds, with no status color.
 - **Pulses are not replayed.** After a dropped connection, the page restores the feed, heat and tree from the server, but misses any pulses during the gap.
 - **Grep and Glob results are undocumented.** Matched files are read from fields observed in Claude Code 2.1.318. If they change, searches will still pulse the searched folder and appear in the feed.

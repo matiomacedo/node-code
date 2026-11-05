@@ -107,8 +107,28 @@ async function loadDetail(id) {
   if (!res.ok) { panel.showGone(id); detail = null; refreshDeps(); return; }
   detail = await res.json();
   if (selected !== id) return;
-  panel.render(detail);
+  // Contents and diff cost a disk read and git runs, so they are fetched only
+  // when the file is opened or its size or mtime moved, whoever changed it.
+  const stamp = `${detail.mtimeMs}:${detail.size}`;
+  const fresh = source && source.id === id && source.stamp === stamp;
+  panel.render(detail, fresh ? source.data : undefined);
   refreshDeps();
+  if (!fresh) loadSource(id, stamp);
+}
+
+let source = null; // {id, stamp, data}; data is undefined while loading.
+
+async function loadSource(id, stamp) {
+  const mine = { id, stamp, data: undefined };
+  source = mine;
+  try {
+    const res = await fetch(api(`/api/source?id=${encodeURIComponent(id)}`));
+    mine.data = res.ok ? await res.json() : null;
+  } catch {
+    mine.data = null;
+  }
+  if (source !== mine || selected !== id || !detail || detail.path !== id) return;
+  panel.render(detail, mine.data);
 }
 
 function refreshDeps() {

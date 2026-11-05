@@ -123,6 +123,17 @@ test('server end to end through the real hook script', async (t) => {
     assert.equal((await req(entry, `/api/file?t=${t1}&id=/etc/passwd`)).status, 404);
   });
 
+  await t.test('file source returns contents and stays inside the index', async () => {
+    const t1 = entry.viewerToken;
+    const r = await req(entry, `/api/source?t=${t1}&id=src/a.ts`);
+    assert.equal(r.status, 200);
+    const body = JSON.parse(r.body);
+    assert.match(body.text, /export const a = 1/);
+    assert.equal(body.diff, null); // Not a git repo.
+    assert.equal((await req(entry, '/api/source?id=src/a.ts')).status, 401);
+    assert.equal((await req(entry, `/api/source?t=${t1}&id=../../../../etc/passwd`)).status, 404);
+  });
+
   await t.test('page is served with a CSP', async () => {
     const r = await req(entry, '/');
     assert.equal(r.status, 200);

@@ -14,8 +14,9 @@ const ctx = (files, extra = {}) => ({ has: (f) => files.includes(f), ...extra })
 test('registry finds parsers by extension and languages for display', () => {
   assert.equal(parserFor('a/b.tsx').language, 'TypeScript');
   assert.equal(parserFor('a/b.py').language, 'Python');
-  assert.equal(parserFor('a/b.rs'), null);
-  assert.equal(languageOf('a/b.rs'), 'Rust');
+  assert.equal(parserFor('a/b.rs').language, 'Rust');
+  assert.equal(parserFor('a/b.swift'), null);
+  assert.equal(languageOf('a/b.swift'), 'Swift');
   assert.equal(languageOf('a/b.zzz'), 'Unknown');
 });
 

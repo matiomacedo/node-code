@@ -97,6 +97,10 @@ function createHandler(app, { hookToken, viewerToken }, webDir) {
         const detail = app.fileDetail(url.searchParams.get('id'));
         return detail ? json(res, 200, detail) : json(res, 404, { error: 'unknown node' });
       }
+      if (route === 'GET /api/source') {
+        const source = await app.fileSource(url.searchParams.get('id'));
+        return source ? json(res, 200, source) : json(res, 404, { error: 'unknown node' });
+      }
       if (route === 'POST /api/heat/reset') {
         app.resetHeat();
         return json(res, 200, {});

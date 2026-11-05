@@ -15,8 +15,22 @@ function size(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// Line numbers on the new side that git reports as added or changed.
+function changedLines(hunks) {
+  const out = new Set();
+  for (const h of hunks) {
+    let n = h.newStart;
+    for (const l of h.lines) {
+      if (l.op === '+') out.add(n);
+      if (l.op !== '-') n++;
+    }
+  }
+  return out;
+}
+
 export class Panel {
   constructor(root, body, close, { onJump, onClose }) {
+    this.views = new Map(); // path -> 'file' | 'changes', the tab the user picked.
     this.root = root;
     this.body = body;
     this.onJump = onJump;
@@ -48,7 +62,66 @@ export class Panel {
     return el('section', {}, heading, content);
   }
 
-  render(d) {
+  fileView(text, marked) {
+    const pre = el('pre', { className: 'code' });
+    const lines = text.split('\n');
+    if (lines.at(-1) === '') lines.pop();
+    lines.forEach((line, i) => {
+      const row = el('div', { className: marked(i + 1) ? 'line add' : 'line', textContent: line || ' ' });
+      row.dataset.n = i + 1;
+      pre.append(row);
+    });
+    return pre;
+  }
+
+  changesView(hunks) {
+    const pre = el('pre', { className: 'code diff' });
+    for (const h of hunks) {
+      pre.append(el('div', { className: 'hunk', textContent: `Line ${h.newStart}` }));
+      let n = h.newStart;
+      for (const l of h.lines) {
+        const row = el('div', { className: l.op === '+' ? 'line add' : l.op === '-' ? 'line del' : 'line', textContent: l.text || ' ' });
+        row.dataset.n = l.op === '-' ? '-' : n;
+        if (l.op !== '-') n++;
+        pre.append(row);
+      }
+    }
+    return pre;
+  }
+
+  contents(path, src) {
+    if (src === undefined) return el('p', { className: 'note', textContent: 'Loading.' });
+    if (!src) return el('p', { className: 'note', textContent: 'Could not read this file.' });
+    if (src.binary) return el('p', { className: 'note', textContent: 'Binary file, not shown.' });
+    const diff = src.diff;
+    const hunks = diff?.hunks || [];
+    const notes = [];
+    if (!diff) notes.push('No git history here, so changes cannot be shown.');
+    else if (diff.untracked) notes.push('New file, not tracked by git yet. Every line counts as added.');
+    else if (!hunks.length) notes.push('No changes since the last commit.');
+    if (src.truncated) notes.push('Showing the first 512 KB.');
+
+    const changed = changedLines(hunks);
+    const marked = diff?.untracked ? () => true : (n) => changed.has(n);
+    let view = this.views.get(path) || (hunks.length ? 'changes' : 'file');
+    if (!hunks.length) view = 'file';
+    const box = el('div', { className: 'contents' });
+    if (hunks.length) {
+      const tab = (name, label) => el('button', {
+        type: 'button', textContent: label, className: view === name ? 'tab on' : 'tab',
+        onclick: () => { this.views.set(path, name); box.replaceWith(this.contents(path, src)); },
+      });
+      const added = hunks.reduce((k, h) => k + h.lines.filter((l) => l.op === '+').length, 0);
+      const removed = hunks.reduce((k, h) => k + h.lines.filter((l) => l.op === '-').length, 0);
+      box.append(el('div', { className: 'tabs' }, tab('changes', 'Changes'), tab('file', 'File'),
+        el('span', { className: 'stat add', textContent: `+${added}` }), el('span', { className: 'stat del', textContent: `-${removed}` })));
+    }
+    for (const n of notes) box.append(el('p', { className: 'note', textContent: n }));
+    box.append(view === 'changes' ? this.changesView(hunks) : this.fileView(src.text, marked));
+    return box;
+  }
+
+  render(d, src) {
     const slash = d.path.lastIndexOf('/');
     const head = [el('h2', { textContent: d.path.slice(slash + 1) })];
     if (slash >= 0) head.push(el('p', { className: 'dir', textContent: d.path.slice(0, slash) }));
@@ -91,6 +164,7 @@ export class Panel {
     if (d.tests.length) {
       parts.push(this.section('Related tests', d.tests.length, el('ul', {}, ...d.tests.map((t) => el('li', {}, this.jump(t))))));
     }
+    parts.push(this.section('Contents', null, this.contents(d.path, src)));
     const scroll = this.root.scrollTop;
     this.body.replaceChildren(...parts);
     this.root.scrollTop = scroll;

@@ -12,6 +12,7 @@ const { ActivityState } = require('./state');
 const { scanRepo, diffScans, acceptsFile, statFile } = require('./scan');
 const { createHandler } = require('./routes');
 const { relatedTests } = require('./related');
+const { readSource } = require('./source');
 const { languageOf } = require('../parsers/registry');
 const { version } = require('../package.json');
 
@@ -221,6 +222,12 @@ class App {
       stats: this.state.stats(id) || null,
       indexing: this.indexing,
     };
+  }
+
+  // Same rule as fileDetail: id must be a known file; the path comes from the index.
+  async fileSource(id) {
+    if (!this.index.files.has(id)) return null;
+    try { return await readSource(this.root, id); } catch { return null; }
   }
 
   resetHeat() {
