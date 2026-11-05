@@ -1,0 +1,8 @@
+{
+  "name": "node-code-local",
+  "description": "Local marketplace for the node-code plugin",
+  "owner": { "name": "node-code" },
+  "plugins": [
+    { "name": "node-code", "source": "./", "description": "Live force-directed graph of your repository that lights up as Claude reads and edits files." }
+  ]
+}

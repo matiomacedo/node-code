@@ -1,0 +1,17 @@
+{
+  "description": "Reports Claude's tool activity to the local node-code graph server, if one is running for this repo.",
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob|Bash",
+        "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/hook.js"], "async": true }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob|Bash",
+        "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/hook.js"], "async": true }] }
+    ],
+    "PostToolUseFailure": [
+      { "matcher": "Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob|Bash",
+        "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/hook.js"], "async": true }] }
+    ]
+  }
+}

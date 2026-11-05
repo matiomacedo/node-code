@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Node Code</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<canvas id="graph" aria-label="Force-directed graph of the repository"></canvas>
+
+<header id="header">
+  <h1 id="repo"></h1>
+  <p id="meta"></p>
+  <p id="notice" hidden></p>
+</header>
+
+<aside id="legend" aria-label="Node status">
+  <ul>
+    <li><i class="dot idle"></i>Idle</li>
+    <li><i class="dot reading"></i>Reading</li>
+    <li><i class="dot editing"></i>Editing</li>
+    <li><i class="dot created"></i>Created</li>
+    <li><i class="dot failed"></i>Failed</li>
+  </ul>
+  <div id="heat-controls">
+    <button id="heat-toggle" type="button">Hide heat</button>
+    <button id="heat-reset" type="button">Reset heat</button>
+    <button id="motion-toggle" type="button">Pause motion</button>
+  </div>
+</aside>
+
+<button id="feed-toggle" type="button" aria-expanded="true" aria-controls="feed">Hide activity</button>
+<aside id="feed" aria-label="Activity feed">
+  <p id="feed-empty">Waiting for Claude to touch a file in this repo.</p>
+  <ol id="feed-list" role="log"></ol>
+</aside>
+
+<aside id="panel" aria-label="File details" hidden>
+  <button id="panel-close" type="button" aria-label="Close details">Close</button>
+  <div id="panel-body"></div>
+</aside>
+
+<div id="tooltip" hidden></div>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

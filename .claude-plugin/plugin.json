@@ -1,0 +1,7 @@
+{
+  "name": "node-code",
+  "displayName": "Node Code",
+  "version": "0.1.0",
+  "description": "Live force-directed graph of your repository that lights up as Claude reads and edits files.",
+  "keywords": ["visualization", "graph", "codebase", "activity"]
+}
