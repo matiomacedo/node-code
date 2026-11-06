@@ -141,6 +141,7 @@ export class Timeline {
     this.playing = false;
     cancelAnimationFrame(this.frame);
     this.render();
+    this.onChange({ live: false, t: this.t, prev: this.t, playing: false });
   }
 
   goLive() {

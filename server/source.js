@@ -11,10 +11,10 @@ const BINARY_SNIFF = 8192;
 const GIT_TIMEOUT_MS = 3000;
 const GIT_MAX_BUFFER = 2 * 1024 * 1024;
 
-function git(root, args) {
+function git(root, args, { timeout = GIT_TIMEOUT_MS, maxBuffer = GIT_MAX_BUFFER } = {}) {
   return new Promise((resolve) => {
     execFile('git', ['-c', 'core.fsmonitor=false', '--literal-pathspecs', ...args], {
-      cwd: root, timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER, windowsHide: true,
+      cwd: root, timeout, maxBuffer, windowsHide: true,
     }, (err, stdout) => resolve(err ? null : stdout));
   });
 }

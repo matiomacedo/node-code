@@ -1,6 +1,6 @@
-import { Tree } from '/tree.js';
+import { Tree, posixDir, visibleIn } from '/tree.js';
 import { Renderer } from '/render.js';
-import { Feed } from '/feed.js';
+import { Feed, MAX_ROWS as MAX_FEED_ROWS } from '/feed.js';
 import { Panel } from '/panel.js';
 import { SearchBox, fileFilter, topExtensions } from '/search.js';
 import { Timeline, heatAt, eventsBetween, statsFrom, trailPaths } from '/timeline.js';
@@ -257,8 +257,51 @@ const sessionStats = new Map();
 let heatSource = 'session'; // or 'git'
 let gitHeat = null;
 let history = { startedAt: Date.now(), events: [], sessions: [], agents: [] };
-// While replaying, live activity waits here and is applied on return to Live.
-const buffered = [];
+// While replaying, live changes wait here and are applied on return to Live.
+// They are coalesced so a long pause stays small: the latest snapshot, then
+// the latest version of each feed entry and of each file's stats. Pulses are
+// dropped, since they would be stale by then.
+const MAX_HISTORY = 20000; // Matches the server's cap.
+let pending = null;
+const newPending = (snapshot = null) => ({ snapshot, entries: new Map(), stats: new Map(), heatReset: false });
+
+function bufferActivity({ entry, stats }) {
+  pending ??= newPending();
+  pending.entries.delete(entry.id); // Re-insert, so the order stays oldest first.
+  pending.entries.set(entry.id, entry);
+  if (pending.entries.size > MAX_FEED_ROWS) pending.entries.delete(pending.entries.keys().next().value);
+  for (const [p, st] of Object.entries(stats)) pending.stats.set(p, st);
+}
+
+function bufferHeatReset() {
+  pending ??= newPending();
+  pending.heatReset = true;
+  for (const [p, st] of pending.stats) pending.stats.set(p, { ...st, heat: 0 });
+}
+
+function flushPending() {
+  const b = pending;
+  pending = null;
+  if (!b) return;
+  if (b.snapshot) applySnapshotActivity(b.snapshot);
+  if (b.heatReset) for (const st of sessionStats.values()) st.heat = 0;
+  for (const e of b.entries.values()) feed.upsert(e);
+  for (const [p, st] of b.stats) sessionStats.set(p, st);
+  if (selected) loadDetail(selected);
+}
+
+// Keeps the page's history current from activity messages, so it is fetched
+// only on connect and when replay starts.
+function addHistoryEvent(ev) {
+  const h = history.events;
+  h.push(ev);
+  if (h.length >= 2 * MAX_HISTORY) h.splice(0, h.length - MAX_HISTORY);
+  scopedCache = null;
+  let fresh = false;
+  if (ev.session && !history.sessions.includes(ev.session)) { history.sessions.push(ev.session); fresh = true; }
+  if (ev.agent && !history.agents.includes(ev.agent)) { history.agents.push(ev.agent); fresh = true; }
+  if (fresh) renderSelects();
+}
 
 function setStats(stats) {
   for (const [p, s] of Object.entries(stats)) {
@@ -277,9 +320,7 @@ function applyHeat() {
   renderer.invalidate();
 }
 
-let historyTimer = 0;
 async function loadHistory() {
-  clearTimeout(historyTimer);
   const h = await getJSON('/api/history');
   if (!h) return;
   history = h;
@@ -288,16 +329,11 @@ async function loadHistory() {
   renderSelects();
   if (filters.session || filters.agent) { refreshFeedFilter(); refreshOverlays(); }
 }
-const scheduleHistory = () => { clearTimeout(historyTimer); historyTimer = setTimeout(loadHistory, 1500); };
 
 function onTimeline({ live, t, prev, playing }) {
   if (live) {
     replaying = false;
-    for (const [type, d] of buffered.splice(0)) {
-      if (type === 'snapshot') applySnapshotActivity(d);
-      else if (type === 'activity') applyActivity(d);
-      else resetSessionHeat();
-    }
+    flushPending();
     applyHeat();
     refreshFeedFilter();
     refreshOverlays();
@@ -321,11 +357,18 @@ function onTimeline({ live, t, prev, playing }) {
       for (const p of ev.pulses || []) pulsePath(p.path, p.status);
     }
     renderer.invalidate();
+    // Playback calls this every frame; the feed and overlays need only a few
+    // updates a second. Pausing or going Live refreshes them fully.
+    const now = performance.now();
+    if (now - lastReplayRefresh < REPLAY_REFRESH_MS) return;
+    lastReplayRefresh = now;
   } else applyHeat();
   refreshFeedFilter();
   if (trailOn) refreshOverlays();
 }
 let replaying = false;
+let lastReplayRefresh = 0;
+const REPLAY_REFRESH_MS = 250;
 
 const timeline = new Timeline(
   { live: $('tl-live'), play: $('tl-play'), speed: $('tl-speed'), slider: $('tl-slider'), label: $('tl-label') },
@@ -422,29 +465,13 @@ let insightsOn = false;
 let insights = null;
 let trailOn = false;
 
-const posixDir = (p) => {
-  const i = p.lastIndexOf('/');
-  return i < 0 ? '.' : p.slice(0, i);
-};
-
-// The node a path shows as: itself, or its closest visible folder.
-function visibleFor(path, shown) {
-  if (shown.has(path)) return path;
-  let p = path;
-  while (p !== '.') {
-    p = posixDir(p);
-    if (shown.has(p)) return p;
-  }
-  return '.';
-}
-
 // Highlights, trail and dimming all hold node ids, which change whenever the
 // visible tree does, so they are all recomputed here from their paths.
 function refreshOverlays() {
   const shown = new Set(graph.nodes.map((n) => n.id));
-  const bright = new Set(selected ? [visibleFor(selected, shown)] : []);
-  const unique = (paths) => [...new Set(paths.map((p) => visibleFor(p, shown)))];
-  const chain = (paths) => paths.map((p) => visibleFor(p, shown)).filter((id, i, a) => id !== a[i - 1]);
+  const bright = new Set(selected ? [visibleIn(selected, shown)] : []);
+  const unique = (paths) => [...new Set(paths.map((p) => visibleIn(p, shown)))];
+  const chain = (paths) => paths.map((p) => visibleIn(p, shown)).filter((id, i, a) => id !== a[i - 1]);
   const set = (name, ids) => {
     renderer.setHighlight(name, ids);
     if (ids) for (const id of ids) bright.add(id);
@@ -464,7 +491,7 @@ function refreshOverlays() {
   // A folder stays bright when anything under it matches.
   for (const p of tree.files.keys()) {
     if (!match(p)) continue;
-    let id = visibleFor(p, shown);
+    let id = visibleIn(p, shown);
     while (!bright.has(id)) {
       bright.add(id);
       if (id === '.') break;
@@ -508,7 +535,7 @@ stream.addEventListener('snapshot', (e) => {
   renderer.rootName = d.repo;
   tree.setFiles(d.files);
   if (timeline.live) applySnapshotActivity(d);
-  else buffered.push(['snapshot', d]);
+  else pending = newPending({ touches: d.touches, feed: d.feed, alerts: d.alerts });
   renderChips();
   refreshFeedFilter();
   rebuildGraph();
@@ -533,16 +560,15 @@ function applyActivity({ entry, pulses, stats }) {
   for (const p of pulses) pulsePath(p.path, p.status);
   const counted = Object.keys(stats).length > 0;
   if (counted) renderer.invalidate();
-  if (trailOn || (counted && filters.status !== 'all')) refreshOverlays();
+  if (trailOn || (counted && (filters.status !== 'all' || filters.session || filters.agent))) refreshOverlays();
   if (selected && (selected in stats || entry.paths.includes(selected))) loadDetail(selected);
-  const isNew = (entry.session && !history.sessions.includes(entry.session)) || (entry.agent && !history.agents.includes(entry.agent));
-  if (isNew || ((filters.session || filters.agent) && counted)) scheduleHistory();
 }
 
 stream.addEventListener('activity', (e) => {
   const data = JSON.parse(e.data);
+  if (data.event) addHistoryEvent(data.event);
   if (timeline.live) applyActivity(data);
-  else buffered.push(['activity', data]);
+  else bufferActivity(data);
   if (window.__ncSeen) window.__ncSeen.push({ id: data.entry.id, verb: data.entry.verb, pulses: data.pulses, at: Date.now(), hookAt: data.hookAt });
 });
 
@@ -559,7 +585,7 @@ function resetSessionHeat() {
 
 stream.addEventListener('heat-reset', () => {
   if (timeline.live) resetSessionHeat();
-  else buffered.push(['heat-reset']);
+  else bufferHeatReset();
   if (selected) loadDetail(selected);
 });
 

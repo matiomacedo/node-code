@@ -30,7 +30,7 @@ class ActivityState {
     this.maxFeed = maxFeed;
     this.maxCalls = maxCalls;
     this.maxHistory = maxHistory;
-    this.history = [];
+    this.events = []; // Trimmed in batches; read through the history getter.
     this.alerts = [];
     this.recentEdits = new Map(); // path -> edit times inside the thrash window
     this.thrashing = new Set();
@@ -71,16 +71,22 @@ class ActivityState {
     const pulses = targets.map((t) => ({ path: t.path, status: failed ? 'failed' : ACTION_STATUS[t.action] }));
     if (active) return { entry, pulses, touched: [], alerts: [] };
     const event = this.record(entry, entry.status, entry.paths, pulses, touched, now);
-    return { entry, pulses, touched, alerts: [...this.checkThrash(event), ...this.checkRepeatFail(event)] };
+    return { entry, pulses, touched, event, alerts: [...this.checkThrash(event), ...this.checkRepeatFail(event)] };
   }
 
   // The run history: one event per finished call and one per rescan attribution.
   record(entry, status, paths, pulses, touched, now) {
     const { id, session, agent, kind, tool, label, error } = entry;
     const event = { ts: now, id, session, agent, kind, tool, label, status, paths: [...paths], pulses, touched, error };
-    this.history.push(event);
-    if (this.history.length > this.maxHistory) this.history.shift();
+    this.events.push(event);
+    // Dropping the oldest one at a time would shift the whole array per call.
+    if (this.events.length >= 2 * this.maxHistory) this.events.splice(0, this.events.length - this.maxHistory);
     return event;
+  }
+
+  get history() {
+    const n = this.events.length - this.maxHistory;
+    return n > 0 ? this.events.slice(n) : this.events;
   }
 
   alert(a) {
@@ -177,6 +183,12 @@ class ActivityState {
   // Calls with a Pre and no Post, such as a denied permission prompt, must not
   // read as in progress forever. A late Post can still resolve them.
   sweep(now) {
+    // Forget files with no edit inside the thrash window, so this stays small.
+    for (const [path, times] of this.recentEdits) {
+      if (now - times[times.length - 1] < THRASH_WINDOW_MS) continue;
+      this.recentEdits.delete(path);
+      this.thrashing.delete(path);
+    }
     const expired = [];
     for (const [id, startedAt] of this.pending) {
       if (now - startedAt < this.pendingTtlMs) continue;
@@ -208,7 +220,7 @@ class ActivityState {
     entry.status = strongest([entry.status, ...pulses.map((p) => p.status)]);
     const touched = targets.map((t) => t.path);
     const event = this.record(entry, strongest(pulses.map((p) => p.status)), touched, pulses, touched, now);
-    return { entry, pulses, touched, alerts: this.checkThrash(event) };
+    return { entry, pulses, touched, event, alerts: this.checkThrash(event) };
   }
 
   stats(path) {
@@ -229,7 +241,7 @@ class ActivityState {
     const events = session ? this.history.filter((e) => e.session === session) : this.history;
     const spots = new Map();
     const read = new Set();
-    const seen = new Set(); // Any read pulse, heat or not: Claude looked at it.
+    const seen = new Set(); // Any read, edit or create pulse: Claude has looked at or changed it.
     const changed = { editing: new Set(), created: new Set() };
     const readBySession = new Map();
     const editedWithoutRead = new Set();
@@ -239,8 +251,9 @@ class ActivityState {
       const sessionReads = readBySession.get(e.session);
       const heat = new Set(e.touched);
       for (const { path, status } of e.pulses) {
-        if (status === 'reading') seen.add(path);
-        if (status === 'reading' && e.tool === 'Read') sessionReads.add(path);
+        if (status === 'reading' || changed[status]) seen.add(path);
+        // A file Claude wrote in full counts as read for later edits.
+        if ((status === 'reading' && e.tool === 'Read') || status === 'created') sessionReads.add(path);
         if (status === 'editing' && EDIT_TOOLS.has(e.tool) && !sessionReads.has(path)) editedWithoutRead.add(path);
         if (!heat.has(path)) continue;
         if (!spots.has(path)) spots.set(path, { path, reads: 0, edits: 0, fails: 0 });

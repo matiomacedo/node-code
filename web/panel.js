@@ -224,16 +224,19 @@ export class Panel {
       byDepth.get(x.depth).push(x.path);
     }
     let room = b.expanded ? Infinity : 30;
+    let shown = 0;
     for (const depth of [...byDepth.keys()].sort((a, c) => a - c)) {
       if (room <= 0) break;
-      const paths = byDepth.get(depth);
-      box.append(el('p', { className: 'depth', textContent: `${depth === 1 ? 'Direct' : `Depth ${depth}`} (${paths.length})` }));
-      box.append(el('ul', {}, ...paths.slice(0, room).map((p) => el('li', {}, this.jump(p)))));
+      const paths = byDepth.get(depth).slice(0, room);
+      box.append(el('p', { className: 'depth', textContent: `${depth === 1 ? 'Direct' : `Depth ${depth}`} (${byDepth.get(depth).length})` }));
+      box.append(el('ul', {}, ...paths.map((p) => el('li', {}, this.jump(p)))));
       room -= paths.length;
+      shown += paths.length;
     }
-    if (room < 0 || b.data.truncated) {
+    const hidden = shown < deps.length;
+    if (hidden || b.data.truncated) {
       const more = b.data.truncated ? 'Stopped at 2,000 files.' : '';
-      if (room < 0) {
+      if (hidden) {
         box.append(el('button', {
           type: 'button', className: 'more', textContent: `Show all ${deps.length.toLocaleString()}`,
           onclick: () => { b.expanded = true; box.parentNode.replaceWith(this.blastSection(d, b)); },

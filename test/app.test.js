@@ -154,6 +154,19 @@ test('edits carry their impact once the index is ready, and thrash alerts are br
   assert.equal(app.snapshot().alerts.length, 1);
 });
 
+test('impact counts the file a call changed, not the first file it listed', async (t) => {
+  const { app } = await setup(t, { 'a.ts': "import { b } from './b';\n", 'b.ts': 'export const b = 1;\n', 'c.ts': "import './a';\n" });
+  await indexed(app);
+  const c = client();
+  app.clients.add(c);
+  app.state.apply({ id: 'x', phase: 'end', tool: 'Bash', kind: 'bash', session: 's', label: 'cat b.ts; touch c.ts',
+    targets: [{ path: 'b.ts', action: 'read', heat: false }] }, 1);
+  app.publish(app.state.attribute('x', { edited: ['c.ts'] }, 2));
+  const [act] = events(c, 'activity');
+  assert.equal(act.entry.impact, 0, 'c.ts has no importers; b.ts has two');
+  assert.deepEqual(act.event, JSON.parse(JSON.stringify(app.state.history.at(-1))), 'the history record rides along');
+});
+
 test('blast, path and insights look ids up in the index', async (t) => {
   const { app } = await setup(t, { 'a.ts': "import { b } from './b';\n", 'b.ts': 'export const b = 1;\n', 'lone.ts': 'export {};\n' });
   await indexed(app);

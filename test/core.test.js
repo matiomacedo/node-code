@@ -294,6 +294,23 @@ test('history stays bounded', () => {
   assert.equal(s.history[0].id, 'i15');
 });
 
+test('history trims in batches but always reads back the newest maxHistory events', () => {
+  const s = new ActivityState({ maxHistory: 5 });
+  for (let i = 0; i < 9; i++) s.apply(ev({ id: `i${i}`, phase: 'end' }), i);
+  assert.ok(s.events.length > 5, 'not trimmed one at a time');
+  assert.deepEqual(s.history.map((e) => e.id), ['i4', 'i5', 'i6', 'i7', 'i8']);
+  s.apply(ev({ id: 'i9', phase: 'end' }), 9);
+  assert.equal(s.events.length, 5, 'trimmed once it reaches twice the cap');
+});
+
+test('sweep forgets thrash tracking for files with no edit inside the window', () => {
+  const s = new ActivityState();
+  s.apply(edit('e1', 'a'), 0);
+  s.apply(edit('e2', 'b'), 9 * 60000);
+  s.sweep(10 * 60000);
+  assert.deepEqual([...s.recentEdits.keys()], ['b']);
+});
+
 test('thrash alert fires once at five edits in ten minutes and rearms after the window', () => {
   const s = new ActivityState();
   const MIN = 60000;
@@ -359,4 +376,15 @@ test('summary reports counts, edited-without-read, unread dependents and failure
   assert.equal(s2.session, 's2');
   assert.equal(s2.calls, 1);
   assert.deepEqual(s2.edited, []);
+});
+
+test('summary: a file Claude created counts as read, and edited importers are not unread', () => {
+  const s = new ActivityState();
+  s.apply(ev({ id: 'w', tool: 'Write', kind: 'edit', phase: 'end', targets: [{ path: 'n', action: 'create', heat: true }] }), 1);
+  s.apply(edit('e1', 'n'), 2);
+  s.apply(edit('e2', 'a'), 3);
+  s.apply(edit('e3', 'b'), 4); // b imports a; Claude changed it, so it is not unread.
+  const sum = s.summary(null, new Map([['a', new Set(['b', 'c'])]]));
+  assert.deepEqual(sum.editedWithoutRead, ['a', 'b']);
+  assert.deepEqual(sum.unreadDependents, [{ path: 'c', of: 'a' }]);
 });

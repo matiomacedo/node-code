@@ -1,5 +1,5 @@
 // The activity feed. Newest entries go on top, so nothing needs auto-scrolling.
-const MAX_ROWS = 500;
+export const MAX_ROWS = 500;
 const clock = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 
 export class Feed {
@@ -29,7 +29,8 @@ export class Feed {
   }
 
   updateEmpty() {
-    const shown = [...this.rows.values()].some((r) => !r.li.hidden);
+    let shown = false;
+    for (const r of this.rows.values()) if (!r.li.hidden) { shown = true; break; }
     this.empty.hidden = shown;
     this.empty.textContent = this.rows.size ? 'No activity matches.' : this.waiting;
   }

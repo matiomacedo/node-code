@@ -26,6 +26,8 @@ const IDLE_CHECK_MS = 60000;
 const IDLE_EXIT_MS = 30 * 60 * 1000;
 const BULK_CHANGE = 200; // Above this (a branch switch, say) send a fresh snapshot, not deltas.
 const FILE_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit']);
+const GIT_HEAT_TIMEOUT_MS = 15000;
+const GIT_HEAT_MAX_BUFFER = 32 * 1024 * 1024;
 const GIT_HEAT_ARGS = ['-c', 'core.quotepath=false', 'log', '--since=90.days', '--max-count=500', '--name-only', '--relative', '--format='];
 
 class App {
@@ -114,14 +116,16 @@ class App {
     }
   }
 
-  publish({ entry, pulses, touched, alerts = [] }, hookAt) {
+  publish({ entry, pulses, touched, event, alerts = [] }, hookAt) {
     const stats = {};
     for (const p of touched) stats[p] = this.state.stats(p);
     // Before the first index the dependents would all read as zero.
-    if (!this.indexing && (entry.status === 'editing' || entry.status === 'created') && entry.paths.length) {
-      entry.impact = graph.dependents(entry.paths[0], this.importedBy).dependents.length;
-    }
-    this.broadcast('activity', { entry, pulses, stats, hookAt });
+    // Counted for the file this call changed, not whatever it listed first:
+    // a Bash call may have read one file and edited another.
+    const changed = pulses.find((p) => p.status === 'editing' || p.status === 'created');
+    if (!this.indexing && changed) entry.impact = graph.dependents(changed.path, this.importedBy).dependents.length;
+    // event is the history record, so pages extend their copy without refetching it.
+    this.broadcast('activity', { entry, pulses, stats, hookAt, event });
     for (const a of alerts) this.broadcast('alert', a);
   }
 
@@ -266,7 +270,8 @@ class App {
 
   // Commit counts per indexed file over recent history; unavailable outside git.
   async gitHeat() {
-    const out = await git(this.root, GIT_HEAT_ARGS);
+    // A busy repo's log of names can pass the panel's diff limits, so it gets its own.
+    const out = await git(this.root, GIT_HEAT_ARGS, { timeout: GIT_HEAT_TIMEOUT_MS, maxBuffer: GIT_HEAT_MAX_BUFFER });
     if (out === null) return { available: false, since: '90 days', counts: {} };
     const counts = {};
     for (const line of out.split('\n')) {
