@@ -2,6 +2,8 @@
 
 A Claude Code plugin that shows your repository as a live force-directed graph in a local web page. Nodes light up as Claude reads and edits files, and clicking a file shows its details and dependencies.
 
+![The repository as a force-directed graph, with folders as hubs and files around them](docs/screenshots/graph-overview.png)
+
 Building the graph is local and uses no model tokens. Nothing leaves your machine: the server listens on 127.0.0.1 only. Hooks send it file paths, search patterns, and the first 300 characters of Bash commands and of error messages from failed calls. File contents and successful tool output are dropped before anything is sent.
 
 ## Install
@@ -53,6 +55,8 @@ The server also exits on its own after 30 minutes with no page open and no activ
 - **Hide activity** at the top right slides the feed away; the same button then reads **Show activity**.
 - **Esc** closes the details panel.
 
+![The details panel for server/graph.js, showing its imports, the files affected if it changes, its exports and its contents](docs/screenshots/file-details.png)
+
 #### Reviewing a session
 
 - **Search** with Cmd-K (Ctrl-K), `/` or the Search button: type part of a path and press Enter to jump to the file.
@@ -60,6 +64,10 @@ The server also exits on its own after 30 minutes with no page open and no activ
 - **Replay** with the timeline at the bottom: drag it back to see the heat and feed as they were, **Play** at 1×, 10× or 50×, and **Live** to return. Live activity keeps arriving while you scrub and is applied when you return.
 - **Summary** at the bottom left: duration, counts, hotspots, the files edited and created (they open on the Changes tab), files edited without being read first, files that import an edited file but were never read, and failed calls.
 - **Alerts** pop up at the bottom right when one file is edited 5 times in 10 minutes or the same Bash command fails 3 times in a row.
+
+| Search | Filter by extension |
+| --- | --- |
+| ![The Go to file box matching paths that contain "serve"](docs/screenshots/search.png) | ![The .md filter on, with every other file dimmed](docs/screenshots/extension-filter.png) |
 
 #### Dependency insights
 
