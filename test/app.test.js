@@ -134,3 +134,69 @@ test('a truncated rescan keeps files beyond the cap that still exist, and drops 
   assert.ok(!app.index.files.has('b.ts'), 'deleted from disk');
   assert.equal(app.truncated, true);
 });
+
+async function indexed(app) {
+  while (app.indexing) await new Promise((r) => setTimeout(r, 10));
+}
+const editOf = (id, p) => ({ id, phase: 'end', tool: 'Edit', kind: 'edit', session: 's', label: p, targets: [{ path: p, action: 'edit', heat: true }] });
+
+test('edits carry their impact once the index is ready, and thrash alerts are broadcast', async (t) => {
+  const { app } = await setup(t, { 'a.ts': "import { b } from './b';\n", 'b.ts': 'export const b = 1;\n', 'c.ts': "import './a';\n" });
+  const c = client();
+  app.clients.add(c);
+  app.publish(app.state.apply(editOf('early', 'b.ts'), 1));
+  await indexed(app);
+  for (let i = 0; i < 5; i++) app.publish(app.state.apply(editOf(`e${i}`, 'b.ts'), 2 + i));
+  const acts = events(c, 'activity');
+  assert.equal(acts[0].entry.impact, undefined, 'not before the index is built');
+  assert.equal(acts[1].entry.impact, 2);
+  assert.deepEqual(events(c, 'alert').map((a) => [a.kind, a.path, a.entryId]), [['thrash', 'b.ts', 'e3']], 'the early edit counts too');
+  assert.equal(app.snapshot().alerts.length, 1);
+});
+
+test('blast, path and insights look ids up in the index', async (t) => {
+  const { app } = await setup(t, { 'a.ts': "import { b } from './b';\n", 'b.ts': 'export const b = 1;\n', 'lone.ts': 'export {};\n' });
+  await indexed(app);
+  assert.deepEqual(app.blast('b.ts'), { path: 'b.ts', dependents: [{ path: 'a.ts', depth: 1 }], truncated: false });
+  assert.equal(app.blast('../b.ts'), null);
+  assert.deepEqual(app.pathBetween('b.ts', 'a.ts').path.map((h) => h.dir), [null, 'importedBy']);
+  assert.deepEqual(app.pathBetween('a.ts', 'lone.ts'), { path: null });
+  assert.equal(app.pathBetween('a.ts', 'nope.ts'), null);
+  const ins = app.insights();
+  assert.deepEqual(ins.orphans, ['lone.ts']);
+  assert.equal(ins.indexing, false);
+  app.onIndexed({});
+  assert.deepEqual(app.insights().orphans, [], 'cache is cleared on reindex');
+});
+
+test('git heat is unavailable outside a git repo', async (t) => {
+  const { app } = await setup(t);
+  assert.deepEqual(await app.gitHeat(), { available: false, since: '90 days', counts: {} });
+});
+
+test('git heat counts recent commits per indexed file', async (t) => {
+  const { app, root } = await setup(t);
+  const run = (...args) => require('node:child_process').execFileSync('git', args, { cwd: root, stdio: 'ignore' });
+  try {
+    run('init', '-q');
+    run('-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.');
+    run('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'one');
+    fs.writeFileSync(path.join(root, 'a.ts'), 'changed');
+    run('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qam', 'two');
+  } catch {
+    t.skip('git not available');
+    return;
+  }
+  assert.deepEqual(await app.gitHeat(), { available: true, since: '90 days', counts: { 'a.ts': 2, 'b.ts': 1 } });
+});
+
+test('history lists sessions and agents seen', async (t) => {
+  const { app } = await setup(t);
+  app.state.apply({ ...editOf('x', 'a.ts'), agent: 'Explore' }, 1);
+  app.state.apply({ ...editOf('y', 'a.ts'), session: 's2' }, 2);
+  const h = app.history();
+  assert.equal(h.startedAt, app.startedAt);
+  assert.deepEqual(h.events.map((e) => e.id), ['x', 'y']);
+  assert.deepEqual(h.sessions, ['s', 's2']);
+  assert.deepEqual(h.agents, ['Explore']);
+});

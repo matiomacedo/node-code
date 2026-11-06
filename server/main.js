@@ -12,7 +12,8 @@ const { ActivityState } = require('./state');
 const { scanRepo, diffScans, acceptsFile, statFile } = require('./scan');
 const { createHandler } = require('./routes');
 const { relatedTests } = require('./related');
-const { readSource } = require('./source');
+const { readSource, git } = require('./source');
+const graph = require('./graph');
 const { languageOf } = require('../parsers/registry');
 const { version } = require('../package.json');
 
@@ -25,6 +26,7 @@ const IDLE_CHECK_MS = 60000;
 const IDLE_EXIT_MS = 30 * 60 * 1000;
 const BULK_CHANGE = 200; // Above this (a branch switch, say) send a fresh snapshot, not deltas.
 const FILE_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit']);
+const GIT_HEAT_ARGS = ['-c', 'core.quotepath=false', 'log', '--since=90.days', '--max-count=500', '--name-only', '--relative', '--format='];
 
 class App {
   constructor(root, dataDir) {
@@ -82,6 +84,7 @@ class App {
       }
     }
     this.importedBy = importedBy;
+    this.insightsCache = null;
     this.indexing = false;
     this.broadcast('index', { ready: true });
   }
@@ -111,10 +114,15 @@ class App {
     }
   }
 
-  publish({ entry, pulses, touched }, hookAt) {
+  publish({ entry, pulses, touched, alerts = [] }, hookAt) {
     const stats = {};
     for (const p of touched) stats[p] = this.state.stats(p);
+    // Before the first index the dependents would all read as zero.
+    if (!this.indexing && (entry.status === 'editing' || entry.status === 'created') && entry.paths.length) {
+      entry.impact = graph.dependents(entry.paths[0], this.importedBy).dependents.length;
+    }
     this.broadcast('activity', { entry, pulses, stats, hookAt });
+    for (const a of alerts) this.broadcast('alert', a);
   }
 
   // Keeps the node for a file Claude just changed in sync, creating it if needed.
@@ -228,6 +236,43 @@ class App {
   async fileSource(id) {
     if (!this.index.files.has(id)) return null;
     try { return await readSource(this.root, id); } catch { return null; }
+  }
+
+  history() {
+    const events = this.state.history;
+    const distinct = (key) => [...new Set(events.map((e) => e[key]).filter(Boolean))];
+    return { startedAt: this.startedAt, events, sessions: distinct('session'), agents: distinct('agent') };
+  }
+
+  // Ids below are looked up in the index and never used to build a path.
+  blast(id) {
+    if (!this.index.files.has(id)) return null;
+    return { path: id, ...graph.dependents(id, this.importedBy) };
+  }
+
+  pathBetween(from, to) {
+    if (!this.index.files.has(from) || !this.index.files.has(to)) return null;
+    return { path: graph.shortestPath(from, to, this.deps, this.importedBy) };
+  }
+
+  insights() {
+    this.insightsCache ??= graph.insights(this.deps, this.importedBy, this.index.files);
+    return { ...this.insightsCache, indexing: this.indexing };
+  }
+
+  summary(session) {
+    return this.state.summary(session || null, this.importedBy);
+  }
+
+  // Commit counts per indexed file over recent history; unavailable outside git.
+  async gitHeat() {
+    const out = await git(this.root, GIT_HEAT_ARGS);
+    if (out === null) return { available: false, since: '90 days', counts: {} };
+    const counts = {};
+    for (const line of out.split('\n')) {
+      if (this.index.files.has(line)) counts[line] = (counts[line] || 0) + 1;
+    }
+    return { available: true, since: '90 days', counts };
   }
 
   resetHeat() {

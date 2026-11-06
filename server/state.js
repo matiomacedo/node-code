@@ -9,6 +9,13 @@ const VERBS = {
 };
 const ACTION_STATUS = { read: 'reading', edit: 'editing', create: 'created' };
 const STATUS_RANK = ['idle', 'reading', 'editing', 'created', 'failed'];
+const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'NotebookEdit']);
+const THRASH_EDITS = 5;
+const THRASH_WINDOW_MS = 10 * 60 * 1000;
+const REPEAT_FAILS = 3;
+const MAX_ALERTS = 20;
+const TOP_HOTSPOTS = 10;
+const MAX_UNREAD_DEPENDENTS = 50;
 
 function strongest(statuses) {
   return statuses.reduce((a, b) => (STATUS_RANK.indexOf(b) > STATUS_RANK.indexOf(a) ? b : a), 'idle');
@@ -18,10 +25,16 @@ function strongest(statuses) {
 // documented ordering, so a Post may overtake its Pre: each call is tracked by
 // tool_use_id and a finished call ignores anything that arrives later.
 class ActivityState {
-  constructor({ pendingTtlMs = 120000, maxFeed = 500, maxCalls = 5000 } = {}) {
+  constructor({ pendingTtlMs = 120000, maxFeed = 500, maxCalls = 5000, maxHistory = 20000 } = {}) {
     this.pendingTtlMs = pendingTtlMs;
     this.maxFeed = maxFeed;
     this.maxCalls = maxCalls;
+    this.maxHistory = maxHistory;
+    this.history = [];
+    this.alerts = [];
+    this.recentEdits = new Map(); // path -> edit times inside the thrash window
+    this.thrashing = new Set();
+    this.failStreaks = new Map(); // session -> {label, count}
     this.calls = new Map();
     this.pending = new Map();
     this.feed = [];
@@ -56,7 +69,60 @@ class ActivityState {
     }
     const touched = targets.filter((t) => t.heat).map((t) => t.path);
     const pulses = targets.map((t) => ({ path: t.path, status: failed ? 'failed' : ACTION_STATUS[t.action] }));
-    return { entry, pulses, touched: active ? [] : touched };
+    if (active) return { entry, pulses, touched: [], alerts: [] };
+    const event = this.record(entry, entry.status, entry.paths, pulses, touched, now);
+    return { entry, pulses, touched, alerts: [...this.checkThrash(event), ...this.checkRepeatFail(event)] };
+  }
+
+  // The run history: one event per finished call and one per rescan attribution.
+  record(entry, status, paths, pulses, touched, now) {
+    const { id, session, agent, kind, tool, label, error } = entry;
+    const event = { ts: now, id, session, agent, kind, tool, label, status, paths: [...paths], pulses, touched, error };
+    this.history.push(event);
+    if (this.history.length > this.maxHistory) this.history.shift();
+    return event;
+  }
+
+  alert(a) {
+    this.alerts.push(a);
+    if (this.alerts.length > MAX_ALERTS) this.alerts.shift();
+    return a;
+  }
+
+  // Fires once per file; it can fire again only after the window has dropped
+  // below the threshold.
+  checkThrash(event) {
+    const out = [];
+    const heat = new Set(event.touched);
+    for (const { path, status } of event.pulses) {
+      if (!heat.has(path) || (status !== 'editing' && status !== 'created')) continue;
+      const times = (this.recentEdits.get(path) || []).filter((t) => event.ts - t < THRASH_WINDOW_MS);
+      if (times.length < THRASH_EDITS) this.thrashing.delete(path);
+      times.push(event.ts);
+      this.recentEdits.set(path, times);
+      if (times.length < THRASH_EDITS || this.thrashing.has(path)) continue;
+      this.thrashing.add(path);
+      out.push(this.alert({ kind: 'thrash', path, count: times.length, session: event.session, ts: event.ts, entryId: event.id }));
+    }
+    return out;
+  }
+
+  // Counts consecutive failures of one Bash command per session. Any other
+  // outcome of a Bash call in that session starts the count again.
+  checkRepeatFail(event) {
+    if (event.kind !== 'bash') return [];
+    const streak = this.failStreaks.get(event.session);
+    if (event.status !== 'failed') {
+      this.failStreaks.delete(event.session);
+      return [];
+    }
+    if (!streak || streak.label !== event.label) {
+      this.failStreaks.set(event.session, { label: event.label, count: 1 });
+      return [];
+    }
+    streak.count++;
+    if (streak.count !== REPEAT_FAILS) return [];
+    return [this.alert({ kind: 'repeat-fail', label: event.label, count: streak.count, session: event.session, ts: event.ts, entryId: event.id })];
   }
 
   verb(ev, targets, active, failed, interrupted) {
@@ -140,7 +206,9 @@ class ActivityState {
     entry.paths = [...new Set([...entry.paths, ...targets.map((t) => t.path)])];
     const pulses = targets.map((t) => ({ path: t.path, status: ACTION_STATUS[t.action] }));
     entry.status = strongest([entry.status, ...pulses.map((p) => p.status)]);
-    return { entry, pulses, touched: targets.map((t) => t.path) };
+    const touched = targets.map((t) => t.path);
+    const event = this.record(entry, strongest(pulses.map((p) => p.status)), touched, pulses, touched, now);
+    return { entry, pulses, touched, alerts: this.checkThrash(event) };
   }
 
   stats(path) {
@@ -152,7 +220,65 @@ class ActivityState {
   }
 
   snapshot() {
-    return { feed: this.feed, touches: Object.fromEntries(this.touches) };
+    return { feed: this.feed, touches: Object.fromEntries(this.touches), alerts: this.alerts };
+  }
+
+  // Review of one session, or of all of them when session is null. importedBy
+  // is the reverse import graph, for dependents of changed files.
+  summary(session, importedBy) {
+    const events = session ? this.history.filter((e) => e.session === session) : this.history;
+    const spots = new Map();
+    const read = new Set();
+    const seen = new Set(); // Any read pulse, heat or not: Claude looked at it.
+    const changed = { editing: new Set(), created: new Set() };
+    const readBySession = new Map();
+    const editedWithoutRead = new Set();
+    const failedCalls = [];
+    for (const e of events) {
+      if (!readBySession.has(e.session)) readBySession.set(e.session, new Set());
+      const sessionReads = readBySession.get(e.session);
+      const heat = new Set(e.touched);
+      for (const { path, status } of e.pulses) {
+        if (status === 'reading') seen.add(path);
+        if (status === 'reading' && e.tool === 'Read') sessionReads.add(path);
+        if (status === 'editing' && EDIT_TOOLS.has(e.tool) && !sessionReads.has(path)) editedWithoutRead.add(path);
+        if (!heat.has(path)) continue;
+        if (!spots.has(path)) spots.set(path, { path, reads: 0, edits: 0, fails: 0 });
+        const s = spots.get(path);
+        if (status === 'failed') s.fails++;
+        else if (status === 'reading') { s.reads++; read.add(path); }
+        else if (changed[status]) { s.edits++; changed[status].add(path); }
+      }
+      if (e.status === 'failed') failedCalls.push({ ts: e.ts, label: e.label, error: e.error ?? null });
+    }
+    const created = [...changed.created].sort();
+    const edited = [...changed.editing].filter((p) => !changed.created.has(p)).sort();
+    const unreadDependents = [];
+    const listed = new Set();
+    for (const file of [...edited, ...created]) {
+      for (const p of [...(importedBy.get(file) || [])].sort()) {
+        if (seen.has(p) || listed.has(p) || unreadDependents.length >= MAX_UNREAD_DEPENDENTS) continue;
+        listed.add(p);
+        unreadDependents.push({ path: p, of: file });
+      }
+    }
+    const startedAt = events.length ? events[0].ts : null;
+    const endedAt = events.length ? events[events.length - 1].ts : null;
+    const total = (s) => s.reads + s.edits + s.fails;
+    return {
+      session: session || null,
+      startedAt,
+      endedAt,
+      durationMs: events.length ? endedAt - startedAt : 0,
+      calls: new Set(events.map((e) => e.id)).size,
+      counts: { read: read.size, edited: edited.length, created: created.length, failed: failedCalls.length },
+      hotspots: [...spots.values()].sort((a, b) => total(b) - total(a) || a.path.localeCompare(b.path)).slice(0, TOP_HOTSPOTS),
+      edited,
+      created,
+      editedWithoutRead: [...editedWithoutRead].sort(),
+      unreadDependents,
+      failedCalls,
+    };
   }
 }
 

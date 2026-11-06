@@ -26,4 +26,4 @@ function relatedTests(rel, files) {
   return out;
 }
 
-module.exports = { relatedTests };
+module.exports = { relatedTests, isTestFile };

@@ -125,3 +125,117 @@ test('hover lookups rebuild the hit grid at most once per position update', () =
   assert.equal(builds, 2);
   assert.equal(r.nodeAt(505, 400)?.id, 'a');
 });
+
+// Overlays and themes -------------------------------------------------------
+let THEMES; let SPRITE_KEYS; let resolveIds; let dimMask;
+test.before(async () => {
+  ({ THEMES, SPRITE_KEYS } = await import('../web/theme.js'));
+  ({ resolveIds, dimMask } = await import('../web/render.js'));
+});
+
+// A context that records the alpha each node sprite is drawn with.
+const recordingCtx = (log) => () => new Proxy({ globalAlpha: 1 }, {
+  get: (t, k) => {
+    if (k === 'drawImage') return () => log.push(t.globalAlpha);
+    return k in t ? t[k] : () => ({ addColorStop: noop });
+  },
+  set: (t, k, v) => { t[k] = v; return true; },
+});
+
+test('both themes define the same keys, including every key the app relies on', () => {
+  const required = ['bg', 'edge', 'edgeDim', 'label', 'labelDim', 'folder', 'file', 'more', 'reading', 'editing',
+    'created', 'failed', 'imports', 'importedBy', 'selected', 'hover', 'blast', 'path', 'cycles', 'hubs', 'orphans', 'trail'];
+  assert.deepEqual(Object.keys(THEMES.light).sort(), Object.keys(THEMES.dark).sort());
+  for (const k of required) assert.ok(k in THEMES.dark, k);
+  for (const name of ['dark', 'light']) {
+    for (const k of SPRITE_KEYS) assert.match(THEMES[name][k], /^#[0-9a-f]{6}$/, `${name}.${k} must be 6-digit hex`);
+  }
+});
+
+test('the dark theme keeps the original palette', () => {
+  const d = THEMES.dark;
+  assert.equal(d.bg, '#0a0a12');
+  assert.equal(d.glow, 1);
+  assert.deepEqual([d.folder, d.file, d.more, d.reading, d.editing, d.created, d.failed],
+    ['#8d82d6', '#6283bd', '#5a5a78', '#5cb6ff', '#f2bb63', '#62dcab', '#f26d80']);
+  assert.equal(d.imports, 'rgba(92,182,255,0.75)');
+  assert.equal(d.importedBy, 'rgba(192,140,240,0.75)');
+});
+
+test('resolveIds keeps input order and drops ids that are not in the graph', () => {
+  const indexOf = new Map([['a', 0], ['b', 1], ['c', 2]]);
+  assert.deepEqual([...resolveIds(indexOf, ['c', 'x', 'a'])], [2, 0]);
+  assert.deepEqual([...dimMask([node('a'), node('b')], new Set(['b', 'z']))], [0, 1]);
+});
+
+test('overlays given before their nodes exist attach once the graph arrives', () => {
+  const r = make();
+  show(r, ['a'], [0, 0]);
+  r.setHighlight('path', ['a', 'b']);
+  r.setTrail(['b', 'a']);
+  r.setDim(new Set(['b']));
+  assert.deepEqual([...r.highlights.get('path').idx], [0]);
+  assert.deepEqual([...r.dimMask], [0]);
+  show(r, ['b', 'a'], [0, 0, 10, 10]);
+  assert.deepEqual([...r.highlights.get('path').idx], [1, 0]);
+  assert.deepEqual([...r.trailIdx], [0, 1]);
+  assert.deepEqual([...r.dimMask], [1, 0]);
+  runFrame();
+  assert.equal(queued.length, 0, 'static overlays do not keep the loop running');
+});
+
+test('clearing overlays removes them and requests a redraw', () => {
+  const r = make();
+  show(r, ['a'], [0, 0]);
+  r.setHighlight('blast', ['a'], '#ff0000');
+  r.setHighlight('hubs', ['a']);
+  runFrame();
+  r.setHighlight('blast', null);
+  assert.equal(queued.length, 1);
+  assert.deepEqual([...r.highlights.keys()], ['hubs']);
+  r.setDim(null);
+  r.setTrail(null);
+  assert.equal(r.dimMask, null);
+  assert.equal(r.trailIdx, null);
+});
+
+test('dimmed nodes draw faintly while kept nodes keep their normal alpha', () => {
+  const log = [];
+  queued = [];
+  const r = new Renderer({ getContext: recordingCtx(log) });
+  r.autoFit = false;
+  r.heatVisible = false;
+  show(r, ['keep', 'fade'], [0, 0, 10, 0]);
+  r.setDim(new Set(['keep']));
+  runFrame();
+  assert.deepEqual(log, [0.8, 0.15]);
+});
+
+test('switching theme rebuilds sprites and unknown names fall back to dark', () => {
+  const r = make();
+  const before = r.sprites.file;
+  r.setTheme('light');
+  assert.equal(r.themeName, 'light');
+  assert.notEqual(r.sprites.file, before);
+  r.setTheme('neon');
+  assert.equal(r.themeName, 'dark');
+});
+
+test('PNG export renders offscreen at 2x and leaves the live canvas alone', async () => {
+  const r = make();
+  show(r, ['a', 'b'], [0, 0, 10, 10]);
+  r.setHighlight('path', ['a', 'b']);
+  r.setTrail(['a', 'b']);
+  const live = { canvas: r.canvas, ctx: r.ctx, dpr: r.dpr };
+  const create = document.createElement;
+  let off;
+  document.createElement = () => (off = { getContext: fakeCtx, toBlob: (cb) => cb('blob') });
+  try {
+    assert.equal(await r.exportPNG(), 'blob');
+  } finally {
+    document.createElement = create;
+  }
+  assert.equal(off.width, 2000);
+  assert.equal(off.height, 1600);
+  assert.deepEqual({ canvas: r.canvas, ctx: r.ctx, dpr: r.dpr }, live);
+});

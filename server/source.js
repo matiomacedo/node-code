@@ -67,4 +67,4 @@ async function readSource(root, rel) {
   };
 }
 
-module.exports = { readSource, parseUnifiedDiff, MAX_SIZE };
+module.exports = { readSource, parseUnifiedDiff, git, MAX_SIZE };

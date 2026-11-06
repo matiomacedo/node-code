@@ -1,3 +1,5 @@
+import { THEMES, SPRITE_KEYS } from './theme.js';
+
 // Canvas 2D renderer. Glows are pre-rendered sprites because shadowBlur is far
 // too slow at 2,000 nodes; every node is one or two drawImage calls.
 const PULSE_MS = 1900;
@@ -8,25 +10,38 @@ const SPRITE = 96;
 const GLOW_RATIO = 3.2; // Sprite half-size relative to node radius.
 const FIT_UNTIL_ALPHA = 0.06; // Stop auto-fitting once the first layout has cooled to this.
 const GRID_SPAN = 1 << 16; // Grid cells per row in the numeric hit-grid key.
+const DIM_ALPHA = 0.15;
 
-const COLORS = {
-  folder: '#8d82d6', file: '#6283bd', more: '#5a5a78',
-  reading: '#5cb6ff', editing: '#f2bb63', created: '#62dcab', failed: '#f26d80',
-};
-const IMPORTS = 'rgba(92,182,255,0.75)';
-const IMPORTED_BY = 'rgba(192,140,240,0.75)';
+// Indices of the ids present in the graph, in input order; unknown ids are dropped.
+export function resolveIds(indexOf, ids) {
+  const out = [];
+  for (const id of ids) {
+    const i = indexOf.get(id);
+    if (i !== undefined) out.push(i);
+  }
+  return Int32Array.from(out);
+}
 
-function makeSprite(color, { core }) {
+// 1 for nodes in the set, 0 otherwise, so the draw loop never touches the Set.
+export function dimMask(nodes, set) {
+  const mask = new Uint8Array(nodes.length);
+  for (let i = 0; i < nodes.length; i++) if (set.has(nodes[i].id)) mask[i] = 1;
+  return mask;
+}
+
+const hexAlpha = (a, glow) => Math.round(a * glow).toString(16).padStart(2, '0');
+
+function makeSprite(color, { core }, glow = 1) {
   const c = document.createElement('canvas');
   c.width = c.height = SPRITE;
   const g = c.getContext('2d');
   const mid = SPRITE / 2;
   const coreR = mid / GLOW_RATIO;
-  const glow = g.createRadialGradient(mid, mid, core ? coreR * 0.6 : 0, mid, mid, mid);
-  glow.addColorStop(0, `${color}${core ? '55' : 'cc'}`);
-  glow.addColorStop(0.45, `${color}${core ? '16' : '44'}`);
-  glow.addColorStop(1, `${color}00`);
-  g.fillStyle = glow;
+  const grad = g.createRadialGradient(mid, mid, core ? coreR * 0.6 : 0, mid, mid, mid);
+  grad.addColorStop(0, `${color}${hexAlpha(core ? 0x55 : 0xcc, glow)}`);
+  grad.addColorStop(0.45, `${color}${hexAlpha(core ? 0x16 : 0x44, glow)}`);
+  grad.addColorStop(1, `${color}00`);
+  g.fillStyle = grad;
   g.fillRect(0, 0, SPRITE, SPRITE);
   if (core) {
     g.fillStyle = color;
@@ -60,10 +75,12 @@ export class Renderer {
     this.dirty = true;
     this.frameRequested = false;
     this.reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
-    this.sprites = {};
-    for (const [name, color] of Object.entries(COLORS)) {
-      this.sprites[name] = { core: makeSprite(color, { core: true }), glow: makeSprite(color, { core: false }) };
-    }
+    this.dimSet = null;
+    this.dimMask = null;
+    this.highlights = new Map();
+    this.trail = null;
+    this.trailIdx = null;
+    this.setTheme('dark');
     this.frameTimes = new URLSearchParams(location.search).has('perf') ? [] : null;
     this.resize();
     addEventListener('resize', () => this.resize());
@@ -94,6 +111,7 @@ export class Renderer {
       this.links = graph.links;
       this.indexOf = new Map(graph.nodes.map((n, i) => [n.id, i]));
       this.refreshNeighbours();
+      this.reindexOverlays();
     }
     this.pos = pos;
     this.simActive = !idle;
@@ -109,6 +127,65 @@ export class Renderer {
     if (!this.heatVisible) return base;
     const h = this.heatOf(n.id);
     return h ? base * Math.min(2.6, 1 + 0.38 * Math.log2(1 + h)) : base;
+  }
+
+  setTheme(name) {
+    this.themeName = THEMES[name] ? name : 'dark';
+    this.theme = THEMES[this.themeName];
+    this.sprites = {};
+    for (const key of SPRITE_KEYS) {
+      const color = this.theme[key];
+      this.sprites[key] = {
+        core: makeSprite(color, { core: true }, this.theme.glow),
+        glow: makeSprite(color, { core: false }, this.theme.glow),
+      };
+    }
+    this.invalidate();
+  }
+
+  // Overlays ---------------------------------------------------------------
+  setDim(set) {
+    this.dimSet = set || null;
+    this.dimMask = this.dimSet ? dimMask(this.nodes, this.dimSet) : null;
+    this.invalidate();
+  }
+
+  setHighlight(name, ids, color) {
+    if (!ids) this.highlights.delete(name);
+    else this.highlights.set(name, { ids: [...ids], color, idx: resolveIds(this.indexOf, ids) });
+    this.invalidate();
+  }
+
+  setTrail(ids) {
+    this.trail = ids ? [...ids] : null;
+    this.trailIdx = this.trail ? resolveIds(this.indexOf, this.trail) : null;
+    this.invalidate();
+  }
+
+  // Overlays hold ids; their indices are only valid for one graph generation.
+  reindexOverlays() {
+    if (this.dimSet) this.dimMask = dimMask(this.nodes, this.dimSet);
+    for (const h of this.highlights.values()) h.idx = resolveIds(this.indexOf, h.ids);
+    if (this.trail) this.trailIdx = resolveIds(this.indexOf, this.trail);
+  }
+
+  // Renders the current view at 2x into a separate canvas; the live canvas is untouched.
+  exportPNG() {
+    const off = document.createElement('canvas');
+    off.width = Math.round(this.w * 2);
+    off.height = Math.round(this.h * 2);
+    const saved = { canvas: this.canvas, ctx: this.ctx, dpr: this.dpr };
+    try {
+      this.canvas = off;
+      this.ctx = off.getContext('2d', { alpha: false });
+      this.dpr = 2;
+      this.draw(performance.now());
+    } finally {
+      Object.assign(this, saved);
+    }
+    return new Promise((resolve, reject) => {
+      off.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('PNG export failed'))), 'image/png');
+    });
   }
 
   pulse(id, status) {
@@ -300,7 +377,7 @@ export class Renderer {
     const { ctx, dpr, cam } = this;
     const n = this.nodes.length;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = '#0a0a12';
+    ctx.fillStyle = this.theme.bg;
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     if (!n || this.pos.length < n * 2) return;
 
@@ -312,6 +389,8 @@ export class Renderer {
     this.drawEdges();
     this.drawDeps();
     this.drawNodes(now, view);
+    this.drawHighlights();
+    this.drawTrail();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.drawLabels(now, view);
   }
@@ -324,24 +403,30 @@ export class Renderer {
   }
 
   drawEdges() {
-    const { ctx, pos, links, cam } = this;
+    const { ctx, pos, links, cam, dimMask: mask } = this;
     ctx.lineWidth = 0.8 / Math.max(cam.k, 0.35);
-    ctx.strokeStyle = this.neighbours ? 'rgba(140,140,190,0.07)' : 'rgba(140,140,190,0.19)';
-    ctx.beginPath();
-    for (let e = 0; e < links.length; e++) {
-      const s = links[e][0] * 2;
-      const t = links[e][1] * 2;
-      const ax = pos[s]; const ay = pos[s + 1]; const bx = pos[t]; const by = pos[t + 1];
-      // A slight bow; the sign alternates so sibling edges fan out rather than stack.
-      const bow = e % 2 ? 0.1 : -0.1;
-      ctx.moveTo(ax, ay);
-      ctx.quadraticCurveTo((ax + bx) / 2 - (by - ay) * bow, (ay + by) / 2 + (bx - ax) * bow, bx, by);
+    ctx.strokeStyle = this.neighbours ? this.theme.edgeDim : this.theme.edge;
+    // With dimming, edges touching a dimmed node go in a second, fainter pass.
+    for (const bright of mask ? [true, false] : [true]) {
+      ctx.globalAlpha = bright ? 1 : DIM_ALPHA;
+      ctx.beginPath();
+      for (let e = 0; e < links.length; e++) {
+        if (mask && (mask[links[e][0]] & mask[links[e][1]]) !== +bright) continue;
+        const s = links[e][0] * 2;
+        const t = links[e][1] * 2;
+        const ax = pos[s]; const ay = pos[s + 1]; const bx = pos[t]; const by = pos[t + 1];
+        // A slight bow; the sign alternates so sibling edges fan out rather than stack.
+        const bow = e % 2 ? 0.1 : -0.1;
+        ctx.moveTo(ax, ay);
+        ctx.quadraticCurveTo((ax + bx) / 2 - (by - ay) * bow, (ay + by) / 2 + (bx - ax) * bow, bx, by);
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
+    ctx.globalAlpha = 1;
 
     if (this.neighbours && this.indexOf.has(this.selected)) {
       const sel = this.indexOf.get(this.selected);
-      ctx.strokeStyle = 'rgba(190,190,235,0.5)';
+      ctx.strokeStyle = this.theme.edgeSelected;
       ctx.beginPath();
       for (let e = 0; e < links.length; e++) {
         const [si, ti] = links[e];
@@ -374,19 +459,22 @@ export class Renderer {
       }
       ctx.stroke();
     };
-    line(this.deps.out, IMPORTS, 0.16);
-    line(this.deps.in, IMPORTED_BY, -0.16);
+    line(this.deps.out, this.theme.imports, 0.16);
+    line(this.deps.in, this.theme.importedBy, -0.16);
   }
 
   drawNodes(now, view) {
     const { ctx, nodes, pos, sprites } = this;
     const dimmed = this.neighbours;
+    const mask = this.dimMask;
     for (let i = 0; i < nodes.length; i++) {
       const x = pos[i * 2]; const y = pos[i * 2 + 1];
       if (x < view.x0 || x > view.x1 || y < view.y0 || y > view.y1) continue;
       const n = nodes[i];
       let r = this.radius(n);
       let alpha = dimmed && !dimmed.has(n.id) ? 0.22 : n.kind === 'folder' ? 0.95 : 0.8;
+      const off = mask && !mask[i];
+      if (off) alpha = Math.min(alpha, DIM_ALPHA);
 
       const bornAt = this.born.get(n.id);
       if (bornAt !== undefined) {
@@ -400,7 +488,7 @@ export class Renderer {
         const h = this.heatOf(n.id);
         if (h) {
           const R = r * GLOW_RATIO * 1.5;
-          ctx.globalAlpha = Math.min(0.85, 0.16 + 0.17 * Math.log2(1 + h)) * (dimmed && !dimmed.has(n.id) ? 0.3 : 1);
+          ctx.globalAlpha = Math.min(0.85, 0.16 + 0.17 * Math.log2(1 + h)) * (dimmed && !dimmed.has(n.id) ? 0.3 : 1) * (off ? DIM_ALPHA : 1);
           ctx.drawImage(set.glow, x - R, y - R, R * 2, R * 2);
         }
       }
@@ -432,7 +520,7 @@ export class Renderer {
       ctx.drawImage(set.core, x - C, y - C, C * 2, C * 2);
       if (!this.reducedMotion) {
         ctx.globalAlpha = 0.55 * (1 - t) ** 3;
-        ctx.strokeStyle = COLORS[p.status];
+        ctx.strokeStyle = this.theme[p.status];
         ctx.lineWidth = 1 / Math.max(this.cam.k, 0.5);
         ctx.beginPath();
         ctx.arc(x, y, r * (1.3 + t * 5), 0, Math.PI * 2);
@@ -444,7 +532,7 @@ export class Renderer {
 
   drawMarks() {
     const { ctx, pos, cam } = this;
-    for (const [id, color] of [[this.selected, 'rgba(235,235,250,0.9)'], [this.hover, 'rgba(235,235,250,0.45)']]) {
+    for (const [id, color] of [[this.selected, this.theme.selected], [this.hover, this.theme.hover]]) {
       const i = this.indexOf.get(id);
       if (i === undefined) continue;
       ctx.strokeStyle = color;
@@ -453,6 +541,61 @@ export class Renderer {
       ctx.arc(pos[i * 2], pos[i * 2 + 1], this.radius(this.nodes[i]) + 3 / Math.max(cam.k, 0.6), 0, Math.PI * 2);
       ctx.stroke();
     }
+  }
+
+  // Each overlay gets its own ring slot so several can mark the same node.
+  drawHighlights() {
+    if (!this.highlights.size) return;
+    const { ctx, pos, cam } = this;
+    let slot = 0;
+    ctx.lineWidth = 1.6 / cam.k;
+    for (const [name, h] of this.highlights) {
+      const { idx } = h;
+      const color = h.color || this.theme[name] || this.theme.selected;
+      ctx.strokeStyle = color;
+      if (name === 'path' && idx.length > 1) {
+        ctx.lineWidth = 2.2 / cam.k;
+        ctx.beginPath();
+        ctx.moveTo(pos[idx[0] * 2], pos[idx[0] * 2 + 1]);
+        for (let j = 1; j < idx.length; j++) ctx.lineTo(pos[idx[j] * 2], pos[idx[j] * 2 + 1]);
+        ctx.stroke();
+        ctx.lineWidth = 1.6 / cam.k;
+      }
+      const gap = (4.5 + slot * 3) / cam.k;
+      ctx.beginPath();
+      for (let j = 0; j < idx.length; j++) {
+        const i = idx[j];
+        const x = pos[i * 2]; const y = pos[i * 2 + 1];
+        const r = this.radius(this.nodes[i]) + gap;
+        ctx.moveTo(x + r, y);
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+      }
+      ctx.stroke();
+      slot++;
+    }
+  }
+
+  // Oldest segments fade out; the newest point gets a dot.
+  drawTrail() {
+    const idx = this.trailIdx;
+    if (!idx || !idx.length) return;
+    const { ctx, pos, cam } = this;
+    ctx.strokeStyle = ctx.fillStyle = this.theme.trail;
+    ctx.lineWidth = 1.5 / cam.k;
+    const segs = idx.length - 1;
+    for (let j = 0; j < segs; j++) {
+      ctx.globalAlpha = 0.1 + 0.75 * ((j + 1) / segs);
+      ctx.beginPath();
+      ctx.moveTo(pos[idx[j] * 2], pos[idx[j] * 2 + 1]);
+      ctx.lineTo(pos[idx[j + 1] * 2], pos[idx[j + 1] * 2 + 1]);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 0.95;
+    const last = idx[segs];
+    ctx.beginPath();
+    ctx.arc(pos[last * 2], pos[last * 2 + 1], 3.2 / cam.k, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
   }
 
   // The zoom at which a node earns a permanent label.
@@ -468,6 +611,7 @@ export class Renderer {
     let drawn = 0;
     ctx.font = FONT;
     ctx.textBaseline = 'middle';
+    const { theme, dimMask: mask } = this;
     const place = (i, color) => {
       const n = nodes[i];
       const s = this.toScreen(pos[i * 2], pos[i * 2 + 1]);
@@ -479,18 +623,18 @@ export class Renderer {
         if (taken.has(`${c},${key0}`)) return false;
       }
       for (let c = col; c <= col + span; c++) taken.add(`${c},${key0}`);
-      ctx.fillStyle = color;
+      ctx.fillStyle = mask && !mask[i] ? theme.labelDim : color;
       ctx.fillText(n.name || this.rootName || '', lx, s.y);
       drawn++;
       return true;
     };
     for (const id of this.pulses.keys()) {
       const i = this.indexOf.get(id);
-      if (i !== undefined) place(i, 'rgba(235,235,250,0.92)');
+      if (i !== undefined) place(i, theme.labelPulse);
     }
     for (const id of [this.selected, ...this.deps.out, ...this.deps.in]) {
       const i = this.indexOf.get(id);
-      if (i !== undefined && !this.pulses.has(id)) place(i, 'rgba(225,225,245,0.85)');
+      if (i !== undefined && !this.pulses.has(id)) place(i, theme.labelStrong);
     }
     if (this.neighbours) return;
     for (let i = 0; i < nodes.length && drawn < MAX_LABELS; i++) {
@@ -498,7 +642,7 @@ export class Renderer {
       if (cam.k < this.labelZoom(n) || this.pulses.has(n.id)) continue;
       const x = pos[i * 2]; const y = pos[i * 2 + 1];
       if (x < view.x0 || x > view.x1 || y < view.y0 || y > view.y1) continue;
-      place(i, 'rgba(190,190,210,0.62)');
+      place(i, theme.label);
     }
   }
 }
