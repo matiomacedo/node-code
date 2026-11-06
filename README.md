@@ -1,6 +1,6 @@
 # node-code
 
-A Claude Code plugin that shows your repository as a live force-directed graph in a local web page. Nodes light up as Claude reads and edits files, and clicking a file shows its details and dependencies.
+A plugin for Claude Code, GitHub Copilot CLI and OpenCode that shows your repository as a live force-directed graph in a local web page. Nodes light up as the agent reads and edits files, and clicking a file shows its details and dependencies.
 
 ![The repository as a force-directed graph, with folders as hubs and files around them](docs/screenshots/graph-overview.png)
 
@@ -8,7 +8,23 @@ Building the graph is local and uses no model tokens. Nothing leaves your machin
 
 ## Install
 
-Requires Node 20 or later (tested on 24) and Claude Code 2.1.318 or later (the version it was tested on). There is nothing else to install.
+Requires Node 20 or later (tested on 24), and Claude Code 2.1.318, Copilot CLI 1.0.107 or OpenCode 2.2.5 or later (the versions it was tested on). It has no dependencies.
+
+### The `node-code` command
+
+Starts and stops the map from a terminal, at no token cost. Copilot CLI and OpenCode need it; for Claude Code it is optional.
+
+```bash
+npm install -g github:matiomacedo/node-code
+```
+
+If your global npm folder needs root, link the command into a folder on your `PATH` instead, from a local clone:
+
+```bash
+ln -s "$PWD/node-code/scripts/node-code.js" ~/.local/bin/node-code
+```
+
+### Claude Code
 
 Install it from GitHub for every session:
 
@@ -33,12 +49,48 @@ claude --plugin-dir ./node-code
 
 Start a new session after installing, so the hooks load.
 
+### GitHub Copilot CLI
+
+Install the plugin, which adds the hooks and the `codebase-map` and `codebase-map-stop` skills.
+
+```bash
+copilot plugin install matiomacedo/node-code
+```
+
+### OpenCode
+
+Copy the plugin and the `/codebase-map` and `/codebase-map-stop` commands into your OpenCode config.
+
+```bash
+NC="$(npm root -g)/node-code/opencode"
+mkdir -p ~/.config/opencode/plugins ~/.config/opencode/commands
+cp "$NC/node-code.js" ~/.config/opencode/plugins/
+cp "$NC"/commands/*.md ~/.config/opencode/commands/
+```
+
+### Differences from Claude Code
+
+- **Copilot** edits through `apply_patch`. A patch that touches several files pulses the first one and refreshes the rest; deleted files leave the graph on the next scan, within 30 seconds. A shell command that exits non-zero shows as failed. Copilot waits for its hooks, which adds about 20 ms before and after each file or shell tool call.
+- **OpenCode** runs `node-code` once per tool event, as Claude Code's hooks do. If `node-code` is not on the `PATH` that OpenCode sees, nothing is shown and nothing breaks. Its `patch` tool, offered only to some models, is mapped like Copilot's but was not seen in testing.
+
 ## Usage
 
-| Command | What it does |
-| --- | --- |
-| `/node-code:codebase-map` | Starts the server for the current repo and opens the page. If it is already running, reuses it and only opens a tab if none is connected. |
-| `/node-code:codebase-map-stop` | Stops the server for the current repo. |
+Start the map from a terminal in the repo. This uses no model tokens, and the map shows every agent working in that repo:
+
+```bash
+node-code start   # starts the server for this repo and opens the page
+node-code stop    # stops it
+```
+
+Or start it from inside an agent, which costs one small model turn:
+
+| Agent | Start | Stop |
+| --- | --- | --- |
+| Claude Code | `/node-code:codebase-map` | `/node-code:codebase-map-stop` |
+| Copilot CLI | ask for the `codebase-map` skill | ask for the `codebase-map-stop` skill |
+| OpenCode | `/codebase-map` | `/codebase-map-stop` |
+
+Starting reuses a server that is already running, and only opens a tab if none is connected. A map started with Claude Code's command shows only Claude Code, because only Claude Code can find it; one started any other way shows all three agents.
 
 Claude Code namespaces plugin commands. Typing `/codebase-map` and pressing Enter works in an interactive session, because autocomplete selects the full name. It does not work in `claude -p`, where you must use the full name.
 

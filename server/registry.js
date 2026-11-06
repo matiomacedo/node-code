@@ -1,6 +1,7 @@
 'use strict';
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const serversDir = (dataDir) => path.join(dataDir, 'servers');
@@ -54,4 +55,7 @@ function pickServer(servers, candidates) {
   return null;
 }
 
-module.exports = { write, read, remove, removeOwned, list, pickServer };
+// Where agents other than Claude Code, which supplies its own, keep the registry.
+const defaultDataDir = () => process.env.NODE_CODE_DATA || path.join(os.homedir(), '.node-code');
+
+module.exports = { write, read, remove, removeOwned, list, pickServer, defaultDataDir };

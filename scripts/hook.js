@@ -5,12 +5,18 @@
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
-const { list, pickServer } = require('../server/registry');
+const { list, pickServer, defaultDataDir } = require('../server/registry');
 const { extract } = require('../server/hook-payload');
 const { realpathOfDeepestExisting } = require('../server/repo-index');
 
 const POST_TIMEOUT_MS = 500;
 const hookAt = performance.timeOrigin;
+
+// Other agents name themselves with --agent; their payloads are mapped to Claude
+// Code's shape first. Without it, this is Claude Code's hook.
+const ADAPTERS = { copilot: '../adapters/copilot', opencode: '../adapters/opencode' };
+const flagAt = process.argv.indexOf('--agent');
+const agent = flagAt >= 0 ? process.argv[flagAt + 1] : null;
 
 function send(server, body) {
   return new Promise((resolve) => {
@@ -29,11 +35,15 @@ function send(server, body) {
 }
 
 async function main(text) {
-  const dataDir = process.env.CLAUDE_PLUGIN_DATA;
-  if (!dataDir) return;
-  const servers = list(dataDir);
+  if (agent && !Object.hasOwn(ADAPTERS, agent)) return;
+  // Claude Code's hook also reaches servers started with `node-code start`, so one
+  // map can show every agent.
+  const dataDirs = agent ? [defaultDataDir()] : [process.env.CLAUDE_PLUGIN_DATA, defaultDataDir()];
+  const servers = dataDirs.filter(Boolean).flatMap((dir) => list(dir));
   if (!servers.length) return;
-  const msg = extract(JSON.parse(text), { pathExists: fs.existsSync });
+  let raw = JSON.parse(text);
+  if (agent) raw = require(ADAPTERS[agent]).toClaude(raw, { pathExists: fs.existsSync });
+  const msg = extract(raw, { pathExists: fs.existsSync });
   const cwd = msg.cwd || process.cwd();
   const candidates = [msg.filePath, msg.searchPath, ...(msg.changed?.files || []), cwd]
     .filter(Boolean)
