@@ -1,9 +1,19 @@
 // Which folders and files are on screen. Pure logic, no DOM.
-const posixDir = (p) => {
+export const posixDir = (p) => {
   const i = p.lastIndexOf('/');
   return i < 0 ? '.' : p.slice(0, i);
 };
 const baseName = (p) => (p === '.' ? '' : p.slice(p.lastIndexOf('/') + 1));
+
+// The node a path shows as among ids tree.visible() returned: itself or its
+// closest shown folder. Tree.nearestVisible answers the same question from
+// the expansion state; this one is cheap enough to call for every file.
+export function visibleIn(path, shown) {
+  for (let p = path; ; p = posixDir(p)) {
+    if (shown.has(p)) return p;
+    if (p === '.') return '.';
+  }
+}
 
 export class Tree {
   constructor({ budget = 2000, initialBudget = 1500, page = 200 } = {}) {

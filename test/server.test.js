@@ -227,6 +227,31 @@ test('server end to end through the real hook script', async (t) => {
     assert.equal(a.stats.fails, 1);
   });
 
+  await t.test('review and graph endpoints need the token and known ids', async () => {
+    const t1 = entry.viewerToken;
+    const get = async (p) => { const r = await req(entry, p); return { status: r.status, body: JSON.parse(r.body) }; };
+    for (const p of ['history', 'blast?id=src/b.ts', 'path?from=src/a.ts&to=src/b.ts', 'insights', 'summary', 'git-heat']) {
+      assert.equal((await req(entry, `/api/${p}`)).status, 401, p);
+    }
+    assert.equal((await get(`/api/blast?t=${t1}&id=../../etc/passwd`)).status, 404);
+    assert.equal((await get(`/api/path?t=${t1}&from=src/a.ts&to=/etc/passwd`)).status, 404);
+
+    const blast = (await get(`/api/blast?t=${t1}&id=src/b.ts`)).body;
+    assert.deepEqual(blast.dependents.map((d) => d.path).sort(), ['src/a.test.ts', 'src/a.ts', 'src/new.ts']);
+    const found = (await get(`/api/path?t=${t1}&from=src/a.ts&to=src/b.ts`)).body;
+    assert.deepEqual(found, { path: [{ path: 'src/a.ts', dir: null }, { path: 'src/b.ts', dir: 'imports' }] });
+    const ins = (await get(`/api/insights?t=${t1}`)).body;
+    assert.deepEqual(ins.hubs[0], { path: 'src/b.ts', count: 2 });
+    const history = (await get(`/api/history?t=${t1}`)).body;
+    assert.ok(history.events.some((e) => e.id === 'read1'));
+    assert.deepEqual(history.sessions, ['s1']);
+    const summary = (await get(`/api/summary?t=${t1}&session=s1`)).body;
+    assert.equal(summary.session, 's1');
+    assert.deepEqual(summary.created, ['src/bash.txt', 'src/new.ts']);
+    assert.ok(summary.failedCalls.some((f) => f.error === 'no match'));
+    assert.deepEqual((await get(`/api/git-heat?t=${t1}`)).body, { available: false, since: '90 days', counts: {} });
+  });
+
   await t.test('heat reset keeps session stats', async () => {
     const r = await req(entry, `/api/heat/reset?t=${entry.viewerToken}`, { method: 'POST' });
     assert.equal(r.status, 200);

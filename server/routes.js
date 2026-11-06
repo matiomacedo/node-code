@@ -101,6 +101,18 @@ function createHandler(app, { hookToken, viewerToken }, webDir) {
         const source = await app.fileSource(url.searchParams.get('id'));
         return source ? json(res, 200, source) : json(res, 404, { error: 'unknown node' });
       }
+      if (route === 'GET /api/history') return json(res, 200, app.history());
+      if (route === 'GET /api/blast') {
+        const blast = app.blast(url.searchParams.get('id'));
+        return blast ? json(res, 200, blast) : json(res, 404, { error: 'unknown node' });
+      }
+      if (route === 'GET /api/path') {
+        const found = app.pathBetween(url.searchParams.get('from'), url.searchParams.get('to'));
+        return found ? json(res, 200, found) : json(res, 404, { error: 'unknown node' });
+      }
+      if (route === 'GET /api/insights') return json(res, 200, app.insights());
+      if (route === 'GET /api/summary') return json(res, 200, app.summary(url.searchParams.get('session')));
+      if (route === 'GET /api/git-heat') return json(res, 200, await app.gitHeat());
       if (route === 'POST /api/heat/reset') {
         app.resetHeat();
         return json(res, 200, {});

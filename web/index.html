@@ -14,6 +14,20 @@
   <h1 id="repo"></h1>
   <p id="meta"></p>
   <p id="notice" hidden></p>
+  <div id="filters" aria-label="Filters">
+    <button id="search-open" type="button" title="Search files (Ctrl K or /)">Search</button>
+    <span id="ext-chips"></span>
+    <select id="f-status" aria-label="Filter by status">
+      <option value="all">Any status</option>
+      <option value="touched">Touched</option>
+      <option value="read">Read</option>
+      <option value="edited">Edited</option>
+      <option value="failed">Failed</option>
+    </select>
+    <select id="f-session" aria-label="Filter by session" hidden></select>
+    <select id="f-agent" aria-label="Filter by agent" hidden></select>
+    <button id="f-clear" type="button" hidden>Clear filters</button>
+  </div>
 </header>
 
 <aside id="legend" aria-label="Node status">
@@ -24,12 +38,39 @@
     <li><i class="dot created"></i>Created</li>
     <li><i class="dot failed"></i>Failed</li>
   </ul>
+  <ul id="insights-legend" hidden>
+    <li><i class="ring cycles"></i><span id="ins-cycles"></span></li>
+    <li><i class="ring hubs"></i><span id="ins-hubs"></span></li>
+    <li><i class="ring orphans"></i><span id="ins-orphans"></span></li>
+  </ul>
   <div id="heat-controls">
-    <button id="heat-toggle" type="button">Hide heat</button>
-    <button id="heat-reset" type="button">Reset heat</button>
-    <button id="motion-toggle" type="button">Pause motion</button>
+    <div>
+      <button id="summary-open" type="button">Summary</button>
+      <button id="insights-toggle" type="button" aria-pressed="false">Insights</button>
+      <button id="trail-toggle" type="button" aria-pressed="false">Trail</button>
+    </div>
+    <div>
+      <button id="heat-toggle" type="button">Hide heat</button>
+      <button id="heat-reset" type="button">Reset heat</button>
+      <button id="heat-source" type="button" aria-pressed="false">Heat: this session</button>
+    </div>
+    <div>
+      <button id="motion-toggle" type="button">Pause motion</button>
+      <button id="theme-toggle" type="button">Theme: auto</button>
+      <button id="export-png" type="button">Export PNG</button>
+    </div>
   </div>
 </aside>
+
+<div id="timeline" aria-label="Session replay">
+  <button id="tl-live" type="button" aria-pressed="true">Live</button>
+  <button id="tl-play" type="button">Play</button>
+  <button id="tl-speed" type="button" title="Replay speed">1×</button>
+  <input id="tl-slider" type="range" min="0" max="1000" value="1000" aria-label="Replay time">
+  <span id="tl-label">Live</span>
+</div>
+
+<div id="toasts" aria-live="polite"></div>
 
 <button id="feed-toggle" type="button" aria-expanded="true" aria-controls="feed">Hide activity</button>
 <aside id="feed" aria-label="Activity feed">
@@ -41,6 +82,14 @@
   <button id="panel-close" type="button" aria-label="Close details">Close</button>
   <div id="panel-body"></div>
 </aside>
+
+<div id="search" hidden>
+  <div class="box" role="dialog" aria-modal="true" aria-labelledby="search-title">
+    <p id="search-title">Go to file</p>
+    <input id="search-input" type="text" autocomplete="off" spellcheck="false" aria-label="File path" aria-controls="search-results">
+    <ol id="search-results"></ol>
+  </div>
+</div>
 
 <div id="tooltip" hidden></div>
 <script type="module" src="/app.js"></script>

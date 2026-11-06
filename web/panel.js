@@ -28,13 +28,35 @@ function changedLines(hunks) {
   return out;
 }
 
+function duration(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor(s / 60) % 60;
+  if (h) return `${h} h ${m} min`;
+  return m ? `${m} min ${s % 60} s` : `${s} s`;
+}
+
+function counts(h) {
+  const parts = [];
+  if (h.reads) parts.push(`${h.reads} read`);
+  if (h.edits) parts.push(`${h.edits} edited`);
+  if (h.fails) parts.push(`${h.fails} failed`);
+  return ` ${parts.join(', ')}`;
+}
+
 export class Panel {
-  constructor(root, body, close, { onJump, onClose }) {
+  constructor(root, body, close, { onJump, onClose, onFindPath, onBlastHighlight, onClearPath }) {
     this.views = new Map(); // path -> 'file' | 'changes', the tab the user picked.
     this.root = root;
     this.body = body;
     this.onJump = onJump;
     this.onClose = onClose;
+    this.onFindPath = onFindPath;
+    this.onBlastHighlight = onBlastHighlight;
+    this.onClearPath = onClearPath;
+    // Set by the app for the selected file and drawn by render():
+    // blast: null | {loading} | {data, on, expanded}; path: null | {to, steps}.
+    this.extras = { blast: null, path: null };
     close.addEventListener('click', () => this.onClose());
     root.addEventListener('transitionend', () => {
       if (!root.classList.contains('open')) root.hidden = true;
@@ -152,11 +174,17 @@ export class Panel {
     const none = (text) => el('p', { className: 'note', textContent: text });
     const parts = [
       ...head,
+      el('div', { className: 'actions' }, el('button', { type: 'button', textContent: 'Find path to…', onclick: () => this.onFindPath(d.path) })),
       meta,
       this.section('Session', null, session),
+    ];
+    if (this.extras.path) parts.push(this.pathSection(this.extras.path));
+    parts.push(
       this.section('Imports', d.imports.length, d.indexing ? waiting() : d.imports.length ? importList : none('No imports found.'), 'var(--imports)'),
       this.section('Imported by', d.importedBy.length, d.indexing ? waiting() : d.importedBy.length ? importedList : none('Nothing in this repo imports it.'), 'var(--imported-by)'),
-    ];
+    );
+    if (d.indexing) parts.push(this.section('Affected if changed', null, waiting()));
+    else if (this.extras.blast) parts.push(this.blastSection(d, this.extras.blast));
     const tokens = (list) => el('div', { className: 'tokens' }, ...list.slice(0, 60).map((t) => el('span', { textContent: t })));
     if (d.exports.length) parts.push(this.section('Exports', d.exports.length, tokens(d.exports)));
     const internal = d.symbols.filter((x) => !d.exports.includes(x));
@@ -168,6 +196,102 @@ export class Panel {
     const scroll = this.root.scrollTop;
     this.body.replaceChildren(...parts);
     this.root.scrollTop = scroll;
+  }
+
+  pathSection({ to, steps }) {
+    const clear = el('button', { type: 'button', className: 'aside', textContent: 'Clear', onclick: () => this.onClearPath() });
+    let content;
+    if (!steps) content = el('p', { className: 'note', textContent: 'No chain of imports connects these files.' });
+    else {
+      content = el('ol', { className: 'steps' }, ...steps.map((s) => el('li', {},
+        s.dir ? el('span', { className: 'dir-label', textContent: s.dir === 'imports' ? 'imports' : 'is imported by' }) : '',
+        this.jump(s.path))));
+    }
+    const section = this.section(`Path to ${to.slice(to.lastIndexOf('/') + 1)}`, steps ? steps.length - 1 : null, content, 'var(--t-path)');
+    section.querySelector('h3').append(clear);
+    return section;
+  }
+
+  blastSection(d, b) {
+    const title = 'Affected if changed';
+    if (b.loading) return this.section(title, null, el('p', { className: 'note', textContent: 'Loading.' }), 'var(--t-blast)');
+    const deps = b.data.dependents;
+    if (!deps.length) return this.section(title, 0, el('p', { className: 'note', textContent: 'Nothing depends on this file.' }), 'var(--t-blast)');
+    const box = el('div');
+    const byDepth = new Map();
+    for (const x of deps) {
+      if (!byDepth.has(x.depth)) byDepth.set(x.depth, []);
+      byDepth.get(x.depth).push(x.path);
+    }
+    let room = b.expanded ? Infinity : 30;
+    let shown = 0;
+    for (const depth of [...byDepth.keys()].sort((a, c) => a - c)) {
+      if (room <= 0) break;
+      const paths = byDepth.get(depth).slice(0, room);
+      box.append(el('p', { className: 'depth', textContent: `${depth === 1 ? 'Direct' : `Depth ${depth}`} (${byDepth.get(depth).length})` }));
+      box.append(el('ul', {}, ...paths.map((p) => el('li', {}, this.jump(p)))));
+      room -= paths.length;
+      shown += paths.length;
+    }
+    const hidden = shown < deps.length;
+    if (hidden || b.data.truncated) {
+      const more = b.data.truncated ? 'Stopped at 2,000 files.' : '';
+      if (hidden) {
+        box.append(el('button', {
+          type: 'button', className: 'more', textContent: `Show all ${deps.length.toLocaleString()}`,
+          onclick: () => { b.expanded = true; box.parentNode.replaceWith(this.blastSection(d, b)); },
+        }));
+      }
+      if (more) box.append(el('p', { className: 'note', textContent: more }));
+    }
+    const toggle = el('button', {
+      type: 'button', className: b.on ? 'aside on' : 'aside', textContent: 'Highlight',
+      onclick: () => this.onBlastHighlight(!b.on),
+    });
+    toggle.setAttribute('aria-pressed', String(!!b.on));
+    const section = this.section(title, `${deps.length.toLocaleString()}${b.data.truncated ? '+' : ''}`, box, 'var(--t-blast)');
+    section.querySelector('h3').append(toggle);
+    return section;
+  }
+
+  // The session review. s is /api/summary, or null while loading or on error.
+  renderSummary(s, failed = false) {
+    const head = el('h2', { textContent: 'Session summary' });
+    if (!s) {
+      this.body.replaceChildren(head, el('p', { className: 'note', textContent: failed ? 'Could not load the summary.' : 'Loading.' }));
+      return;
+    }
+    const parts = [head, el('p', { className: 'dir', textContent: s.session ? `Session ${String(s.session).slice(0, 8)}` : 'All sessions' })];
+    const meta = el('dl');
+    const pair = (k, v) => meta.append(el('dt', { textContent: k }), el('dd', { textContent: v }));
+    pair('Duration', duration(s.durationMs));
+    pair('Calls', String(s.calls));
+    pair('Read', String(s.counts.read));
+    pair('Edited', String(s.counts.edited));
+    pair('Created', String(s.counts.created));
+    pair('Failed', String(s.counts.failed));
+    parts.push(meta);
+
+    const list = (items, row) => el('ul', {}, ...items.map((x) => el('li', {}, ...row(x))));
+    const changes = (p) => el('button', {
+      type: 'button', textContent: p,
+      onclick: () => { this.views.set(p, 'changes'); this.onJump(p); },
+    });
+    const add = (title, items, row, empty, swatch) => {
+      parts.push(this.section(title, items.length, items.length ? list(items, row) : el('p', { className: 'note', textContent: empty }), swatch));
+    };
+    add('Hotspots', s.hotspots, (h) => [this.jump(h.path), el('span', { className: 'count', textContent: counts(h) })], 'Nothing touched yet.');
+    add('Edited', s.edited, (p) => [changes(p)], 'No files edited.', 'var(--editing)');
+    if (s.created.length) add('Created', s.created, (p) => [changes(p)], '', 'var(--created)');
+    add('Edited without reading first', s.editedWithoutRead, (p) => [changes(p)], 'Every edited file was read first.');
+    add('Unread dependents', s.unreadDependents, (u) => [this.jump(u.path), el('span', { className: 'count', textContent: ' of ' }), this.jump(u.of)],
+      'Every importer of an edited file was read.');
+    add('Failed calls', s.failedCalls, (f) => [
+      el('span', { className: 'count', textContent: `${timeFormat.format(f.ts)} ` }),
+      el('span', { className: 'failed-label', textContent: f.label }),
+      ...(f.error ? [el('p', { className: 'note', textContent: f.error })] : []),
+    ], 'No calls failed.', 'var(--failed)');
+    this.body.replaceChildren(...parts);
   }
 
   showGone(path) {

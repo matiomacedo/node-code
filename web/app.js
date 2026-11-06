@@ -1,7 +1,10 @@
-import { Tree } from '/tree.js';
+import { Tree, posixDir, visibleIn } from '/tree.js';
 import { Renderer } from '/render.js';
-import { Feed } from '/feed.js';
+import { Feed, MAX_ROWS as MAX_FEED_ROWS } from '/feed.js';
 import { Panel } from '/panel.js';
+import { SearchBox, fileFilter, topExtensions } from '/search.js';
+import { Timeline, heatAt, eventsBetween, statsFrom, trailPaths } from '/timeline.js';
+import { THEMES } from '/theme.js';
 
 const $ = (id) => document.getElementById(id);
 const token = new URLSearchParams(location.search).get('t');
@@ -53,6 +56,7 @@ function rebuildGraph() {
   }
   updateHeader();
   refreshDeps();
+  refreshOverlays();
 }
 
 worker.onmessage = ({ data }) => {
@@ -97,8 +101,71 @@ const feed = new Feed($('feed-list'), $('feed-empty'), { onFocus: (path) => jump
 const panel = new Panel($('panel'), $('panel-body'), $('panel-close'), {
   onJump: (path) => jumpTo(path),
   onClose: () => select(null),
+  onFindPath: (path) => search.open('path', `Path from ${path.slice(path.lastIndexOf('/') + 1)} to…`),
+  onBlastHighlight: (on) => {
+    if (panel.extras.blast) panel.extras.blast.on = on;
+    rerenderPanel();
+    refreshOverlays();
+  },
+  onClearPath: () => clearPath(),
 });
 let detail = null;
+let summaryOpen = false;
+
+async function getJSON(p) {
+  try {
+    const res = await fetch(api(p));
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+function rerenderPanel() {
+  if (!detail || detail.path !== selected) return;
+  panel.render(detail, source && source.id === selected ? source.data : undefined);
+}
+
+// Dependents change only when the index does, so they are fetched once per
+// selection and again after each index.
+let blastStale = false;
+async function loadBlast(id) {
+  const keep = panel.extras.blast && panel.extras.blast.id === id ? panel.extras.blast : null;
+  if (keep && !blastStale) return;
+  blastStale = false;
+  if (!keep) panel.extras.blast = { id, loading: true, on: false, expanded: false };
+  const data = await getJSON(`/api/blast?id=${encodeURIComponent(id)}`);
+  if (selected !== id || !panel.extras.blast || panel.extras.blast.id !== id) return;
+  panel.extras.blast = data ? { id, data, on: panel.extras.blast.on, expanded: panel.extras.blast.expanded } : null;
+  rerenderPanel();
+  refreshOverlays();
+}
+
+async function showPath(from, to) {
+  const res = await getJSON(`/api/path?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+  if (selected !== from || !res) return;
+  panel.extras.path = { to, steps: res.path };
+  rerenderPanel();
+  refreshOverlays();
+}
+
+function clearPath() {
+  if (!panel.extras.path) return;
+  panel.extras.path = null;
+  rerenderPanel();
+  refreshOverlays();
+}
+
+async function openSummary() {
+  if (selected) select(null);
+  summaryOpen = true;
+  panel.open();
+  panel.renderSummary(null);
+  const s = filters.session ? `?session=${encodeURIComponent(filters.session)}` : '';
+  const data = await getJSON(`/api/summary${s}`);
+  if (!summaryOpen || selected) return;
+  panel.renderSummary(data, !data);
+}
 
 async function loadDetail(id) {
   let res;
@@ -107,6 +174,7 @@ async function loadDetail(id) {
   if (!res.ok) { panel.showGone(id); detail = null; refreshDeps(); return; }
   detail = await res.json();
   if (selected !== id) return;
+  if (!detail.indexing) loadBlast(id);
   // Contents and diff cost a disk read and git runs, so they are fetched only
   // when the file is opened or its size or mtime moved, whoever changed it.
   const stamp = `${detail.mtimeMs}:${detail.size}`;
@@ -140,8 +208,14 @@ function refreshDeps() {
 }
 
 function select(id) {
+  if (id !== selected) {
+    panel.extras = { blast: null, path: null };
+    if (search.isOpen && search.mode === 'path') search.close();
+  }
   selected = id;
   detail = null;
+  summaryOpen = false;
+  refreshOverlays();
   if (id) {
     panel.open();
     renderer.setSelection(id);
@@ -176,8 +250,279 @@ stream.addEventListener('error', () => {
     : 'Lost connection to the server. Retrying.');
 });
 
+// Heat, history and replay ------------------------------------------------
+// Session stats per file are kept here, so the heat source can switch back to
+// them and the status filter can read them.
+const sessionStats = new Map();
+let heatSource = 'session'; // or 'git'
+let gitHeat = null;
+let history = { startedAt: Date.now(), events: [], sessions: [], agents: [] };
+// While replaying, live changes wait here and are applied on return to Live.
+// They are coalesced so a long pause stays small: the latest snapshot, then
+// the latest version of each feed entry and of each file's stats. Pulses are
+// dropped, since they would be stale by then.
+const MAX_HISTORY = 20000; // Matches the server's cap.
+let pending = null;
+const newPending = (snapshot = null) => ({ snapshot, entries: new Map(), stats: new Map(), heatReset: false });
+
+function bufferActivity({ entry, stats }) {
+  pending ??= newPending();
+  pending.entries.delete(entry.id); // Re-insert, so the order stays oldest first.
+  pending.entries.set(entry.id, entry);
+  if (pending.entries.size > MAX_FEED_ROWS) pending.entries.delete(pending.entries.keys().next().value);
+  for (const [p, st] of Object.entries(stats)) pending.stats.set(p, st);
+}
+
+function bufferHeatReset() {
+  pending ??= newPending();
+  pending.heatReset = true;
+  for (const [p, st] of pending.stats) pending.stats.set(p, { ...st, heat: 0 });
+}
+
+function flushPending() {
+  const b = pending;
+  pending = null;
+  if (!b) return;
+  if (b.snapshot) applySnapshotActivity(b.snapshot);
+  if (b.heatReset) for (const st of sessionStats.values()) st.heat = 0;
+  for (const e of b.entries.values()) feed.upsert(e);
+  for (const [p, st] of b.stats) sessionStats.set(p, st);
+  if (selected) loadDetail(selected);
+}
+
+// Keeps the page's history current from activity messages, so it is fetched
+// only on connect and when replay starts.
+function addHistoryEvent(ev) {
+  const h = history.events;
+  h.push(ev);
+  if (h.length >= 2 * MAX_HISTORY) h.splice(0, h.length - MAX_HISTORY);
+  scopedCache = null;
+  let fresh = false;
+  if (ev.session && !history.sessions.includes(ev.session)) { history.sessions.push(ev.session); fresh = true; }
+  if (ev.agent && !history.agents.includes(ev.agent)) { history.agents.push(ev.agent); fresh = true; }
+  if (fresh) renderSelects();
+}
+
 function setStats(stats) {
-  for (const [p, s] of Object.entries(stats)) tree.setHeat(p, s.heat);
+  for (const [p, s] of Object.entries(stats)) {
+    sessionStats.set(p, s);
+    if (heatSource === 'session' && timeline.live) tree.setHeat(p, s.heat);
+  }
+}
+
+// Puts the heat of the current source into the tree: the replay at the
+// scrubbed time, git history, or this server run's session stats.
+function applyHeat() {
+  tree.clearHeat();
+  if (!timeline.live) for (const [p, n] of heatAt(history.events, timeline.t)) tree.setHeat(p, n);
+  else if (heatSource === 'git' && gitHeat) for (const [p, n] of Object.entries(gitHeat)) tree.setHeat(p, n);
+  else for (const [p, s] of sessionStats) tree.setHeat(p, s.heat);
+  renderer.invalidate();
+}
+
+async function loadHistory() {
+  const h = await getJSON('/api/history');
+  if (!h) return;
+  history = h;
+  scopedCache = null;
+  timeline.setStart(h.startedAt);
+  renderSelects();
+  if (filters.session || filters.agent) { refreshFeedFilter(); refreshOverlays(); }
+}
+
+function onTimeline({ live, t, prev, playing }) {
+  if (live) {
+    replaying = false;
+    flushPending();
+    applyHeat();
+    refreshFeedFilter();
+    refreshOverlays();
+    return;
+  }
+  if (!replaying) {
+    replaying = true;
+    // The page's copy may lag the server; replay what the server has now.
+    loadHistory().then(() => {
+      if (timeline.live) return;
+      applyHeat();
+      refreshFeedFilter();
+      if (trailOn) refreshOverlays();
+    });
+  }
+  const crossed = playing && t > prev ? eventsBetween(history.events, prev, t) : null;
+  if (crossed) {
+    if (!crossed.length) return;
+    for (const ev of crossed) {
+      for (const p of ev.touched || []) tree.setHeat(p, (tree.heat.get(p) || 0) + 1);
+      for (const p of ev.pulses || []) pulsePath(p.path, p.status);
+    }
+    renderer.invalidate();
+    // Playback calls this every frame; the feed and overlays need only a few
+    // updates a second. Pausing or going Live refreshes them fully.
+    const now = performance.now();
+    if (now - lastReplayRefresh < REPLAY_REFRESH_MS) return;
+    lastReplayRefresh = now;
+  } else applyHeat();
+  refreshFeedFilter();
+  if (trailOn) refreshOverlays();
+}
+let replaying = false;
+let lastReplayRefresh = 0;
+const REPLAY_REFRESH_MS = 250;
+
+const timeline = new Timeline(
+  { live: $('tl-live'), play: $('tl-play'), speed: $('tl-speed'), slider: $('tl-slider'), label: $('tl-label') },
+  { now: () => Date.now() + clockOffset, onChange: onTimeline },
+);
+
+// Filters ---------------------------------------------------------------
+const filters = { exts: new Set(), status: 'all', session: '', agent: '' };
+let scopedCache = null;
+
+const filterActive = () => filters.exts.size > 0 || filters.status !== 'all' || !!filters.session || !!filters.agent;
+
+// A path predicate for the extension and status filters. With a session or
+// agent chosen, stats come from that slice of the history; scoped also keeps
+// only files that slice touched (the graph wants that, the feed does not).
+function pathFilter(scoped) {
+  const sliced = !!(filters.session || filters.agent);
+  let stats = sessionStats;
+  if (sliced) {
+    const key = `${filters.session}\n${filters.agent}`;
+    if (!scopedCache || scopedCache.key !== key) scopedCache = { key, stats: statsFrom(history.events, filters) };
+    stats = scopedCache.stats;
+  }
+  return fileFilter({ exts: filters.exts, status: filters.status, stats, scoped: scoped && sliced });
+}
+
+function refreshFeedFilter() {
+  const match = pathFilter(false);
+  const { session, agent } = filters;
+  const { live, t } = timeline;
+  if (!match && !session && !agent && live) { feed.setFilter(null); return; }
+  feed.setFilter((e) => (!session || e.session === session) && (!agent || e.agent === agent)
+    && (live || e.ts <= t) && (!match || e.paths.some(match)));
+}
+
+function onFiltersChanged() {
+  $('f-clear').hidden = !filterActive();
+  refreshFeedFilter();
+  refreshOverlays();
+  if (summaryOpen) openSummary();
+}
+
+function renderChips() {
+  const exts = topExtensions(tree.files.keys());
+  for (const e of filters.exts) if (!exts.includes(e)) exts.push(e);
+  const box = $('ext-chips');
+  if (box.dataset.exts === exts.join(' ')) return;
+  box.dataset.exts = exts.join(' ');
+  box.replaceChildren(...exts.map((ext) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'chip';
+    b.textContent = `.${ext}`;
+    b.setAttribute('aria-pressed', String(filters.exts.has(ext)));
+    b.addEventListener('click', () => {
+      if (filters.exts.has(ext)) filters.exts.delete(ext);
+      else filters.exts.add(ext);
+      b.setAttribute('aria-pressed', String(filters.exts.has(ext)));
+      onFiltersChanged();
+    });
+    return b;
+  }));
+}
+
+function fillSelect(sel, all, values, name, current) {
+  const opts = [new Option(all, '')];
+  for (const v of values) opts.push(new Option(name(v), v));
+  if (current && !values.includes(current)) opts.push(new Option(name(current), current));
+  sel.replaceChildren(...opts);
+  sel.value = current;
+}
+
+function renderSelects() {
+  fillSelect($('f-session'), 'All sessions', history.sessions, (s) => `Session ${String(s).slice(0, 8)}`, filters.session);
+  fillSelect($('f-agent'), 'All agents', history.agents, (a) => a, filters.agent);
+  $('f-session').hidden = history.sessions.length < 2 && !filters.session;
+  $('f-agent').hidden = !history.agents.length && !filters.agent;
+}
+
+for (const [id, key] of [['f-status', 'status'], ['f-session', 'session'], ['f-agent', 'agent']]) {
+  $(id).addEventListener('change', (e) => { filters[key] = e.target.value; onFiltersChanged(); });
+}
+$('f-clear').addEventListener('click', () => {
+  Object.assign(filters, { exts: new Set(), status: 'all', session: '', agent: '' });
+  $('f-status').value = 'all';
+  renderSelects();
+  $('ext-chips').dataset.exts = '';
+  renderChips();
+  onFiltersChanged();
+});
+
+// Overlays --------------------------------------------------------------
+let insightsOn = false;
+let insights = null;
+let trailOn = false;
+
+// Highlights, trail and dimming all hold node ids, which change whenever the
+// visible tree does, so they are all recomputed here from their paths.
+function refreshOverlays() {
+  const shown = new Set(graph.nodes.map((n) => n.id));
+  const bright = new Set(selected ? [visibleIn(selected, shown)] : []);
+  const unique = (paths) => [...new Set(paths.map((p) => visibleIn(p, shown)))];
+  const chain = (paths) => paths.map((p) => visibleIn(p, shown)).filter((id, i, a) => id !== a[i - 1]);
+  const set = (name, ids) => {
+    renderer.setHighlight(name, ids);
+    if (ids) for (const id of ids) bright.add(id);
+  };
+  const { blast, path } = panel.extras;
+  set('blast', blast && blast.on && blast.data ? unique(blast.data.dependents.map((d) => d.path)) : null);
+  set('path', path && path.steps ? chain(path.steps.map((s) => s.path)) : null);
+  set('cycles', insights ? unique(insights.cycles.flat()) : null);
+  set('hubs', insights ? unique(insights.hubs.map((h) => h.path)) : null);
+  set('orphans', insights ? unique(insights.orphans) : null);
+  const trail = trailOn ? chain(trailPaths(feed.visibleEntries(), (p) => tree.files.has(p))) : null;
+  renderer.setTrail(trail && trail.length ? trail : null);
+  if (trail) for (const id of trail) bright.add(id);
+
+  const match = pathFilter(true);
+  if (!match) { renderer.setDim(null); return; }
+  // A folder stays bright when anything under it matches.
+  for (const p of tree.files.keys()) {
+    if (!match(p)) continue;
+    let id = visibleIn(p, shown);
+    while (!bright.has(id)) {
+      bright.add(id);
+      if (id === '.') break;
+      id = posixDir(id);
+    }
+  }
+  renderer.setDim(bright);
+}
+
+async function loadInsights() {
+  const d = await getJSON('/api/insights');
+  if (!insightsOn) return;
+  insights = d;
+  const legend = $('insights-legend');
+  legend.hidden = !d;
+  if (d) {
+    $('ins-cycles').textContent = `In an import cycle (${d.cycles.reduce((n, c) => n + c.length, 0)})`;
+    $('ins-hubs').textContent = `Most imported (${d.hubs.length})`;
+    $('ins-orphans').textContent = `Unconnected (${d.orphans.length})`;
+    legend.title = d.indexing ? 'Still indexing, so this may be incomplete.' : '';
+  }
+  refreshOverlays();
+}
+
+// Server stream handlers --------------------------------------------------
+function applySnapshotActivity(d) {
+  sessionStats.clear();
+  for (const [p, s] of Object.entries(d.touches)) sessionStats.set(p, s);
+  feed.reset(d.feed);
+  for (const a of d.alerts || []) feed.mark(a.entryId, alertText(a));
+  applyHeat();
 }
 
 stream.addEventListener('snapshot', (e) => {
@@ -189,11 +534,13 @@ stream.addEventListener('snapshot', (e) => {
   $('repo').textContent = d.repo;
   renderer.rootName = d.repo;
   tree.setFiles(d.files);
-  tree.clearHeat();
-  setStats(d.touches);
-  feed.reset(d.feed);
+  if (timeline.live) applySnapshotActivity(d);
+  else pending = newPending({ touches: d.touches, feed: d.feed, alerts: d.alerts });
+  renderChips();
+  refreshFeedFilter();
   rebuildGraph();
   if (selected) loadDetail(selected);
+  loadHistory();
 });
 
 stream.addEventListener('tree', (e) => {
@@ -203,25 +550,76 @@ stream.addEventListener('tree', (e) => {
     tree.removeFile(p);
     if (selected === p) loadDetail(p);
   }
+  renderChips();
   rebuildGraph();
 });
 
-stream.addEventListener('activity', (e) => {
-  const { entry, pulses, stats, hookAt } = JSON.parse(e.data);
+function applyActivity({ entry, pulses, stats }) {
   feed.upsert(entry);
   setStats(stats);
   for (const p of pulses) pulsePath(p.path, p.status);
-  if (Object.keys(stats).length) renderer.invalidate();
+  const counted = Object.keys(stats).length > 0;
+  if (counted) renderer.invalidate();
+  if (trailOn || (counted && (filters.status !== 'all' || filters.session || filters.agent))) refreshOverlays();
   if (selected && (selected in stats || entry.paths.includes(selected))) loadDetail(selected);
-  if (window.__ncSeen) window.__ncSeen.push({ id: entry.id, verb: entry.verb, pulses, at: Date.now(), hookAt });
+}
+
+stream.addEventListener('activity', (e) => {
+  const data = JSON.parse(e.data);
+  if (data.event) addHistoryEvent(data.event);
+  if (timeline.live) applyActivity(data);
+  else bufferActivity(data);
+  if (window.__ncSeen) window.__ncSeen.push({ id: data.entry.id, verb: data.entry.verb, pulses: data.pulses, at: Date.now(), hookAt: data.hookAt });
 });
 
-stream.addEventListener('index', () => { if (selected) loadDetail(selected); });
+stream.addEventListener('index', () => {
+  blastStale = true;
+  if (selected) loadDetail(selected);
+  if (insightsOn) loadInsights();
+});
+
+function resetSessionHeat() {
+  for (const s of sessionStats.values()) s.heat = 0;
+  applyHeat();
+}
 
 stream.addEventListener('heat-reset', () => {
-  tree.clearHeat();
-  renderer.invalidate();
+  if (timeline.live) resetSessionHeat();
+  else bufferHeatReset();
   if (selected) loadDetail(selected);
+});
+
+function alertText(a) {
+  if (a.kind === 'thrash') return `${a.path} edited ${a.count} times in 10 minutes`;
+  return `"${a.label}" failed ${a.count} times in a row`;
+}
+
+const MAX_TOASTS = 4;
+stream.addEventListener('alert', (e) => {
+  const a = JSON.parse(e.data);
+  feed.mark(a.entryId, alertText(a));
+  const box = $('toasts');
+  const toast = document.createElement('div');
+  toast.className = `toast ${a.kind}`;
+  toast.setAttribute('role', 'status');
+  const title = document.createElement('strong');
+  title.textContent = a.kind === 'thrash' ? 'Same file, many edits' : 'Same command keeps failing';
+  const text = document.createElement(a.path ? 'button' : 'p');
+  text.className = 'text';
+  text.textContent = alertText(a);
+  if (a.path) {
+    text.type = 'button';
+    text.addEventListener('click', () => jumpTo(a.path));
+  }
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'close';
+  close.textContent = '×';
+  close.setAttribute('aria-label', 'Dismiss');
+  close.addEventListener('click', () => toast.remove());
+  toast.append(title, text, close);
+  box.append(toast);
+  while (box.children.length > MAX_TOASTS) box.firstElementChild.remove();
 });
 
 // Controls --------------------------------------------------------------
@@ -231,10 +629,94 @@ $('heat-toggle').addEventListener('click', (e) => {
   renderer.invalidate();
 });
 $('heat-reset').addEventListener('click', () => fetch(api('/api/heat/reset'), { method: 'POST' }));
+$('heat-source').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  if (heatSource === 'git') heatSource = 'session';
+  else {
+    const g = await getJSON('/api/git-heat');
+    if (!g || !g.available) {
+      btn.textContent = 'No git history';
+      return;
+    }
+    gitHeat = g.counts;
+    heatSource = 'git';
+  }
+  btn.textContent = heatSource === 'git' ? 'Heat: git, 90 days' : 'Heat: this session';
+  btn.setAttribute('aria-pressed', String(heatSource === 'git'));
+  applyHeat();
+});
 $('feed-toggle').addEventListener('click', (e) => {
   const closed = $('feed').classList.toggle('closed');
   e.target.textContent = closed ? 'Show activity' : 'Hide activity';
   e.target.setAttribute('aria-expanded', String(!closed));
+});
+$('insights-toggle').addEventListener('click', (e) => {
+  insightsOn = !insightsOn;
+  e.currentTarget.setAttribute('aria-pressed', String(insightsOn));
+  if (insightsOn) loadInsights();
+  else {
+    insights = null;
+    $('insights-legend').hidden = true;
+    refreshOverlays();
+  }
+});
+$('trail-toggle').addEventListener('click', (e) => {
+  trailOn = !trailOn;
+  e.currentTarget.setAttribute('aria-pressed', String(trailOn));
+  refreshOverlays();
+});
+$('summary-open').addEventListener('click', () => openSummary());
+$('search-open').addEventListener('click', () => search.open());
+
+$('export-png').addEventListener('click', async () => {
+  let blob;
+  try { blob = await renderer.exportPNG(); } catch { return; }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${$('repo').textContent || 'repo'}-graph.png`;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+
+// Theme: auto follows the system, remembered per browser like motion.
+const THEME_KEY = 'node-code:theme';
+const THEME_MODES = ['auto', 'light', 'dark'];
+let themeMode = (() => {
+  try {
+    const saved = localStorage.getItem(THEME_KEY);
+    if (THEME_MODES.includes(saved)) return saved;
+  } catch { /* storage unavailable: use the default */ }
+  return 'auto';
+})();
+const lightQuery = matchMedia('(prefers-color-scheme: light)');
+
+function applyTheme() {
+  const resolved = themeMode === 'auto' ? (lightQuery.matches ? 'light' : 'dark') : themeMode;
+  const root = document.documentElement;
+  root.dataset.theme = resolved;
+  renderer.setTheme(resolved);
+  // Overlay colors come from the canvas palette so the legend matches the rings.
+  for (const k of ['blast', 'path', 'cycles', 'hubs', 'orphans', 'trail']) root.style.setProperty(`--t-${k}`, THEMES[resolved][k]);
+  $('theme-toggle').textContent = `Theme: ${themeMode}`;
+}
+$('theme-toggle').addEventListener('click', () => {
+  themeMode = THEME_MODES[(THEME_MODES.indexOf(themeMode) + 1) % THEME_MODES.length];
+  try { localStorage.setItem(THEME_KEY, themeMode); } catch { /* not remembered */ }
+  applyTheme();
+});
+lightQuery.addEventListener('change', () => { if (themeMode === 'auto') applyTheme(); });
+applyTheme();
+
+// Search ----------------------------------------------------------------
+const search = new SearchBox($('search'), $('search-input'), $('search-title'), $('search-results'), {
+  paths: () => tree.files.keys(),
+  onPick: (path, mode) => {
+    if (mode === 'path' && selected) showPath(selected, path);
+    else jumpTo(path);
+  },
 });
 
 // Ambient motion: on unless paused, remembered per browser. It also stops while
@@ -259,7 +741,20 @@ $('motion-toggle').addEventListener('click', () => {
 });
 document.addEventListener('visibilitychange', applyMotion);
 applyMotion();
-addEventListener('keydown', (e) => { if (e.key === 'Escape' && selected) select(null); });
+addEventListener('keydown', (e) => {
+  if (search.isOpen) {
+    if (e.key === 'Escape') search.close();
+    return;
+  }
+  const typing = e.target instanceof Element && e.target.closest('input, textarea, select, [contenteditable]');
+  if ((e.key === 'k' || e.key === 'K') && (e.metaKey || e.ctrlKey) && !e.altKey) {
+    e.preventDefault();
+    search.open();
+  } else if (e.key === '/' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    e.preventDefault();
+    search.open();
+  } else if (e.key === 'Escape' && (selected || summaryOpen)) select(null);
+});
 
 // Pointer: pan, zoom, drag, hover, click --------------------------------
 const tooltip = $('tooltip');

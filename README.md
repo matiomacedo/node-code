@@ -53,6 +53,23 @@ The server also exits on its own after 30 minutes with no page open and no activ
 - **Hide activity** at the top right slides the feed away; the same button then reads **Show activity**.
 - **Esc** closes the details panel.
 
+#### Reviewing a session
+
+- **Search** with Cmd-K (Ctrl-K), `/` or the Search button: type part of a path and press Enter to jump to the file.
+- **Filter** with the bar under the repo name: file extensions, status (touched, read, edited, failed), and, when there is more than one, session and subagent. Files that don't match are dimmed and their feed rows hidden.
+- **Replay** with the timeline at the bottom: drag it back to see the heat and feed as they were, **Play** at 1×, 10× or 50×, and **Live** to return. Live activity keeps arriving while you scrub and is applied when you return.
+- **Summary** at the bottom left: duration, counts, hotspots, the files edited and created (they open on the Changes tab), files edited without being read first, files that import an edited file but were never read, and failed calls.
+- **Alerts** pop up at the bottom right when one file is edited 5 times in 10 minutes or the same Bash command fails 3 times in a row.
+
+#### Dependency insights
+
+- **Affected if changed** in the file panel lists every file that imports it, directly or indirectly. **Highlight** rings them in the graph. Edits in the feed show the same count as **→ N**.
+- **Find path to…** in the file panel: pick another file to see the chain of imports that connects them.
+- **Insights** rings files in import cycles, the 15 most imported files, and parsed files with no imports either way (tests excluded).
+- **Trail** draws the order of the last 30 files Claude touched.
+- **Heat: this session** switches to **Heat: git, 90 days**, which colors files by how many of the last 500 commits in 90 days changed them.
+- **Theme** cycles auto, light and dark. **Export PNG** saves the current view.
+
 ### What the colors mean
 
 | Status | Shown when |
@@ -93,13 +110,14 @@ To add a language, write a parser and a resolver and register them in `parsers/r
 - **Diffs need git.** The panel diffs against `HEAD`, so outside a git repo, or before the first commit, it shows the file without changes. Files over 512 KB show only their first 512 KB, and binary files are not shown.
 - **Bash attribution is best effort.** Claude Code's `bashEditDiff` field is used when present, but it is in public beta and did not appear in testing. The fallback rescans the repo after each Bash call and credits changes to that call, so an unrelated change made in the same moment gets credited too. Changes from background commands appear within 30 seconds, with no status color.
 - **Pulses are not replayed.** After a dropped connection, the page restores the feed, heat and tree from the server, but misses any pulses during the gap.
+- **Session history lives in memory.** Replay, filters by session and the summary cover only the current server run, up to 20,000 calls. Stopping the server forgets them. The timeline replays heat and pulses; the feed keeps its last 500 rows.
+- **Root-absolute imports don't resolve.** An import like `'/tree.js'` (served from the web root) has no edge, so blast radius, paths and insights miss it.
 - **Grep and Glob results are undocumented.** Matched files are read from fields observed in Claude Code 2.1.318. If they change, searches will still pulse the searched folder and appear in the feed.
 - **MultiEdit is not in the current hook docs.** It stays in the matcher in case older versions send it.
 - **A session in another repo is routed by path.** A tool call goes to the repo containing its file, or else its working directory. Only one feed per repo exists, with all its sessions mixed; the session ID is in each entry's tooltip.
 - **Some source folders are skipped by name:** `build`, `dist`, `out`, `target`, `coverage`, `venv` and similar, even when they are tracked. Symlinks are not shown.
 - **Size caps:** 2,000 visible nodes, 200 files per folder page (click "N more" for the next page), 100,000 files scanned.
 - **Tested on macOS only.** The Linux and Windows browser-open commands are written but untested, and PowerShell tool calls are not tracked.
-- **No light mode.**
 
 ## Development
 

@@ -3,7 +3,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 let Tree;
-test.before(async () => { ({ Tree } = await import('../web/tree.js')); });
+let visibleIn;
+test.before(async () => { ({ Tree, visibleIn } = await import('../web/tree.js')); });
 
 const make = (paths, opts) => {
   const t = new Tree(opts);
@@ -127,4 +128,11 @@ test('heat rolls up to collapsed ancestors', () => {
   assert.equal(t.heatOf('a'), 3);
   t.clearHeat();
   assert.equal(t.heatOf('a'), 0);
+});
+
+test('visibleIn agrees with nearestVisible for the ids visible() returns', () => {
+  const t = make(['a/b/c.ts', 'a/b/d.ts', 'a/e.ts', 'f.ts']);
+  t.collapse('a/b');
+  const shown = new Set(t.visible().nodes.map((n) => n.id));
+  for (const p of [...t.files.keys(), ...t.folders.keys()]) assert.equal(visibleIn(p, shown), t.nearestVisible(p), p);
 });

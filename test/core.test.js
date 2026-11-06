@@ -271,3 +271,120 @@ test('feed and call history stay bounded', () => {
   assert.equal(s.snapshot().feed.length, 10);
   assert.equal(s.snapshot().feed.at(-1).id, 'i99');
 });
+
+const edit = (id, path, over) => ev({ id, tool: 'Edit', kind: 'edit', phase: 'end', label: path,
+  targets: [{ path, action: 'edit', heat: true }], ...over });
+const bash = (id, label, phase, over) => ev({ id, tool: 'Bash', kind: 'bash', phase, label, targets: [], ...over });
+
+test('history records finished calls and rescan attributions, not starts', () => {
+  const s = new ActivityState();
+  s.apply(ev(), 1);
+  s.apply(ev({ phase: 'end' }), 2);
+  s.apply(bash('b', 'make', 'end'), 3);
+  s.attribute('b', { edited: ['x'] }, 4);
+  assert.deepEqual(s.history.map((e) => [e.ts, e.id, e.status]), [[2, 't1', 'reading'], [3, 'b', 'idle'], [4, 'b', 'editing']]);
+  assert.deepEqual(s.history[2].pulses, [{ path: 'x', status: 'editing' }]);
+  assert.deepEqual(s.history[0].touched, ['src/a.ts']);
+});
+
+test('history stays bounded', () => {
+  const s = new ActivityState({ maxHistory: 5 });
+  for (let i = 0; i < 20; i++) s.apply(ev({ id: `i${i}`, phase: 'end' }), i);
+  assert.equal(s.history.length, 5);
+  assert.equal(s.history[0].id, 'i15');
+});
+
+test('history trims in batches but always reads back the newest maxHistory events', () => {
+  const s = new ActivityState({ maxHistory: 5 });
+  for (let i = 0; i < 9; i++) s.apply(ev({ id: `i${i}`, phase: 'end' }), i);
+  assert.ok(s.events.length > 5, 'not trimmed one at a time');
+  assert.deepEqual(s.history.map((e) => e.id), ['i4', 'i5', 'i6', 'i7', 'i8']);
+  s.apply(ev({ id: 'i9', phase: 'end' }), 9);
+  assert.equal(s.events.length, 5, 'trimmed once it reaches twice the cap');
+});
+
+test('sweep forgets thrash tracking for files with no edit inside the window', () => {
+  const s = new ActivityState();
+  s.apply(edit('e1', 'a'), 0);
+  s.apply(edit('e2', 'b'), 9 * 60000);
+  s.sweep(10 * 60000);
+  assert.deepEqual([...s.recentEdits.keys()], ['b']);
+});
+
+test('thrash alert fires once at five edits in ten minutes and rearms after the window', () => {
+  const s = new ActivityState();
+  const MIN = 60000;
+  const fired = [];
+  for (let i = 0; i < 7; i++) fired.push(...s.apply(edit(`e${i}`, 'f', {}), i * MIN).alerts);
+  assert.deepEqual(fired, [{ kind: 'thrash', path: 'f', count: 5, session: 's', ts: 4 * MIN, entryId: 'e4' }]);
+  // Twenty minutes later the window is empty, so the rule rearms.
+  const later = [];
+  for (let i = 0; i < 5; i++) later.push(...s.apply(edit(`l${i}`, 'f', {}), 30 * MIN + i).alerts);
+  assert.equal(later.length, 1);
+  assert.equal(s.snapshot().alerts.length, 2);
+});
+
+test('repeat-fail alert fires on the third failure in a row and resets on success', () => {
+  const s = new ActivityState();
+  const run = (id, label, phase) => s.apply(bash(id, label, phase, { error: 'boom' }), 1).alerts;
+  assert.deepEqual(run('1', 'npm test', 'fail'), []);
+  assert.deepEqual(run('2', 'npm test', 'fail'), []);
+  const [a] = run('3', 'npm test', 'fail');
+  assert.deepEqual(a, { kind: 'repeat-fail', label: 'npm test', count: 3, session: 's', ts: 1, entryId: '3' });
+  assert.deepEqual(run('4', 'npm test', 'fail'), [], 'fires once');
+  assert.deepEqual(run('5', 'npm test', 'end'), []);
+  run('6', 'npm test', 'fail');
+  run('7', 'ls', 'fail');
+  assert.deepEqual(run('8', 'npm test', 'fail'), [], 'a different label breaks the streak');
+  run('9', 'npm test', 'fail');
+  assert.equal(run('10', 'npm test', 'fail').length, 1);
+});
+
+test('alerts kept in the snapshot are capped at 20', () => {
+  const s = new ActivityState();
+  for (let f = 0; f < 25; f++) for (let i = 0; i < 5; i++) s.apply(edit(`${f}-${i}`, `f${f}`, {}), i);
+  assert.equal(s.snapshot().alerts.length, 20);
+  assert.equal(s.snapshot().alerts.at(-1).path, 'f24');
+});
+
+test('summary reports counts, edited-without-read, unread dependents and failures', () => {
+  const s = new ActivityState();
+  s.apply(ev({ id: 'r1', phase: 'end', targets: [{ path: 'a', action: 'read', heat: true }] }), 10);
+  s.apply(edit('e1', 'a'), 20);
+  s.apply(edit('e2', 'b'), 30); // Never read in this session.
+  s.apply(ev({ id: 'r2', phase: 'end', session: 's2', targets: [{ path: 'b', action: 'read', heat: true }] }), 35);
+  s.apply(ev({ id: 'w', tool: 'Write', kind: 'edit', phase: 'end', targets: [{ path: 'n', action: 'create', heat: true }] }), 40);
+  s.apply(ev({ id: 'r3', phase: 'end', targets: [{ path: 'r', action: 'read', heat: false }] }), 45);
+  s.apply(bash('x', 'npm test', 'fail', { error: 'exit 1' }), 50);
+  const importedBy = new Map([['a', new Set(['c', 'r'])], ['n', new Set(['d'])]]);
+
+  const all = s.summary(null, importedBy);
+  assert.equal(all.session, null);
+  assert.equal(all.startedAt, 10);
+  assert.equal(all.endedAt, 50);
+  assert.equal(all.durationMs, 40);
+  assert.equal(all.calls, 7);
+  assert.deepEqual(all.counts, { read: 2, edited: 2, created: 1, failed: 1 });
+  assert.deepEqual(all.edited, ['a', 'b']);
+  assert.deepEqual(all.created, ['n']);
+  assert.deepEqual(all.editedWithoutRead, ['b'], 'a read in another session does not count');
+  assert.deepEqual(all.unreadDependents, [{ path: 'c', of: 'a' }, { path: 'd', of: 'n' }]);
+  assert.deepEqual(all.failedCalls, [{ ts: 50, label: 'npm test', error: 'exit 1' }]);
+  assert.deepEqual(all.hotspots[0], { path: 'a', reads: 1, edits: 1, fails: 0 });
+
+  const s2 = s.summary('s2', importedBy);
+  assert.equal(s2.session, 's2');
+  assert.equal(s2.calls, 1);
+  assert.deepEqual(s2.edited, []);
+});
+
+test('summary: a file Claude created counts as read, and edited importers are not unread', () => {
+  const s = new ActivityState();
+  s.apply(ev({ id: 'w', tool: 'Write', kind: 'edit', phase: 'end', targets: [{ path: 'n', action: 'create', heat: true }] }), 1);
+  s.apply(edit('e1', 'n'), 2);
+  s.apply(edit('e2', 'a'), 3);
+  s.apply(edit('e3', 'b'), 4); // b imports a; Claude changed it, so it is not unread.
+  const sum = s.summary(null, new Map([['a', new Set(['b', 'c'])]]));
+  assert.deepEqual(sum.editedWithoutRead, ['a', 'b']);
+  assert.deepEqual(sum.unreadDependents, [{ path: 'c', of: 'a' }]);
+});
