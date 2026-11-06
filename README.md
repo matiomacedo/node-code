@@ -173,6 +173,7 @@ To add a language, write a parser and a resolver and register them in `parsers/r
 - **Session history lives in memory.** Replay, filters by session and the summary cover only the current server run, up to 20,000 calls. Stopping the server forgets them. The timeline replays heat and pulses; the feed keeps its last 500 rows.
 - **Root-absolute imports don't resolve.** An import like `'/tree.js'` (served from the web root) has no edge, so blast radius, paths and insights miss it.
 - **Grep and Glob results are undocumented.** Matched files are read from fields observed in Claude Code 2.1.318. If they change, searches will still pulse the searched folder and appear in the feed.
+- **Large searches pulse only some files.** At most 100 matched files pulse per search. In Copilot, whose search results are plain text, only the first 5000 lines are read, so matches past that point don't pulse; the search still appears in the feed.
 - **MultiEdit is not in the current hook docs.** It stays in the matcher in case older versions send it.
 - **A session in another repo is routed by path.** A tool call goes to the repo containing its file, or else its working directory. Only one feed per repo exists, with all its sessions mixed; the session ID is in each entry's tooltip.
 - **Some source folders are skipped by name:** `build`, `dist`, `out`, `target`, `coverage`, `venv` and similar, even when they are tracked. Symlinks are not shown.

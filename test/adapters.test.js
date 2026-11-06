@@ -120,12 +120,23 @@ test('copilot', async (t) => {
     assert.deepEqual(mapped.tool_response.filenames, ['C:\\repo\\src\\a.js']);
   });
 
-  await t.test('a Grep stops examining output after 5000 lines', () => {
-    const lines = Array.from({ length: 20000 }, (_, i) => `/repo/nowhere/${i}.js:x`);
+  await t.test('a Grep examines the first 5000 lines of output and no more', () => {
+    const junk = Array.from({ length: 4999 }, (_, i) => `/repo/nowhere/${i}.js:x`);
+    const lines = [...junk, '/repo/src/a.js:line 5000', '/repo/src/b.js:line 5001'];
     const raw = { ...find('PostToolUse', 'Grep'), tool_result: { result_type: 'success', text_result_for_llm: lines.join('\n') } };
-    let checks = 0;
-    copilot.toClaude(raw, { pathExists: () => { checks += 1; return false; } });
-    assert.ok(checks <= 5000, `${checks} existence checks`);
+    assert.deepEqual(copilot.toClaude(raw, { pathExists: exists }).tool_response.filenames, ['/repo/src/a.js']);
+  });
+
+  await t.test('a Glob result whose file name contains a colon is matched', () => {
+    const raw = { ...find('PostToolUse', 'Glob'), tool_result: { result_type: 'success', text_result_for_llm: '/repo/src/a:b.js' } };
+    const mapped = copilot.toClaude(raw, { pathExists: (p) => p === '/repo/src/a:b.js' });
+    assert.deepEqual(mapped.tool_response.filenames, ['/repo/src/a:b.js']);
+  });
+
+  await t.test('a Glob line with a Windows drive letter is matched whole', () => {
+    const raw = { ...find('PostToolUse', 'Glob'), tool_result: { result_type: 'success', text_result_for_llm: 'C:\\repo\\src\\a.js' } };
+    const mapped = copilot.toClaude(raw, { pathExists: (p) => p.endsWith('C:\\repo\\src\\a.js') });
+    assert.deepEqual(mapped.tool_response.filenames, ['C:\\repo\\src\\a.js']);
   });
 
   await t.test('a Grep given several paths searches in the first', () => {

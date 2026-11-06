@@ -16,20 +16,25 @@ const MAX_MATCHED = 100; // extract keeps no more than this
 const MAX_LINES = 5000; // Copilot waits for the hook, so a huge result is only sampled
 const DRIVE = /^[A-Za-z]:[\\/]/;
 
-// Grep prints "path:text" and Glob prints one path per line, so each line names
-// one candidate: everything before the first colon (after a Windows drive letter),
-// or the whole line. Only candidates that exist as files are kept, so text from a
-// matched line is never taken for a path, and each is checked once.
+// Grep prints "path:text" and Glob prints one path per line. A line names
+// everything before its first colon (after a Windows drive letter), or, failing
+// that, the whole line, which keeps file names that contain a colon. Only
+// candidates that exist as files are kept, so text from a matched line is never
+// taken for a path, and each is checked once.
 function matchedFiles(text, cwd, pathExists) {
   const checked = new Map();
+  const exists = (p) => {
+    if (!checked.has(p)) checked.set(p, pathExists(path.resolve(cwd || '.', p)));
+    return checked.get(p);
+  };
   const found = new Set();
   for (const line of text.split('\n', MAX_LINES)) {
     if (found.size >= MAX_MATCHED) break;
+    if (!line) continue;
     const colon = line.indexOf(':', DRIVE.test(line) ? 2 : 0);
-    const candidate = colon < 0 ? line : line.slice(0, colon);
-    if (!candidate) continue;
-    if (!checked.has(candidate)) checked.set(candidate, pathExists(path.resolve(cwd || '.', candidate)));
-    if (checked.get(candidate)) found.add(candidate);
+    const prefix = colon < 0 ? line : line.slice(0, colon);
+    if (prefix && exists(prefix)) found.add(prefix);
+    else if (prefix !== line && exists(line)) found.add(line);
   }
   return [...found];
 }

@@ -1,6 +1,6 @@
 {
   "name": "node-code",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "Live force-directed graph of your repository for Claude Code, GitHub Copilot CLI and OpenCode",
   "license": "MIT",
