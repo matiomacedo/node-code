@@ -105,6 +105,29 @@ test('copilot', async (t) => {
     assert.deepEqual(paths(run(copilot, raw)).filter((p) => p.endsWith('.js')), ['read src/a.js', 'read src/b.js']);
   });
 
+  await t.test('a large Grep checks each matched file once, not each output line', () => {
+    const lines = Array.from({ length: 3000 }, (_, i) => `/repo/src/${i % 2 ? 'a' : 'b'}.js:line ${i}`);
+    const raw = { ...find('PostToolUse', 'Grep'), tool_result: { result_type: 'success', text_result_for_llm: lines.join('\n') } };
+    let checks = 0;
+    const mapped = copilot.toClaude(raw, { pathExists: (p) => { checks += 1; return exists(p); } });
+    assert.deepEqual(mapped.tool_response.filenames.sort(), ['/repo/src/a.js', '/repo/src/b.js']);
+    assert.ok(checks <= 2, `${checks} existence checks`);
+  });
+
+  await t.test('a Grep line with a Windows drive letter keeps the whole path', () => {
+    const raw = { ...find('PostToolUse', 'Grep'), tool_result: { result_type: 'success', text_result_for_llm: 'C:\\repo\\src\\a.js:export const foo' } };
+    const mapped = copilot.toClaude(raw, { pathExists: (p) => p.endsWith('C:\\repo\\src\\a.js') });
+    assert.deepEqual(mapped.tool_response.filenames, ['C:\\repo\\src\\a.js']);
+  });
+
+  await t.test('a Grep stops examining output after 5000 lines', () => {
+    const lines = Array.from({ length: 20000 }, (_, i) => `/repo/nowhere/${i}.js:x`);
+    const raw = { ...find('PostToolUse', 'Grep'), tool_result: { result_type: 'success', text_result_for_llm: lines.join('\n') } };
+    let checks = 0;
+    copilot.toClaude(raw, { pathExists: () => { checks += 1; return false; } });
+    assert.ok(checks <= 5000, `${checks} existence checks`);
+  });
+
   await t.test('a Grep given several paths searches in the first', () => {
     const raw = { ...find('PreToolUse', 'Grep'), tool_input: { pattern: 'foo', paths: ['/repo/src', '/repo/test'] } };
     assert.equal(run(copilot, raw).label, '"foo" in src');

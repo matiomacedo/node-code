@@ -2,7 +2,7 @@
   "name": "node-code",
   "version": "0.3.0",
   "private": true,
-  "description": "Claude Code plugin: live force-directed graph of your repository",
+  "description": "Live force-directed graph of your repository for Claude Code, GitHub Copilot CLI and OpenCode",
   "license": "MIT",
   "bin": {
     "node-code": "scripts/node-code.js"

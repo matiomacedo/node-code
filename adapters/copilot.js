@@ -13,16 +13,23 @@ const { editFromPatch } = require('./patch');
 
 const EXIT_CODE = /<shellId: [^>]* completed with exit code (\d+)>\s*$/;
 const MAX_MATCHED = 100; // extract keeps no more than this
+const MAX_LINES = 5000; // Copilot waits for the hook, so a huge result is only sampled
+const DRIVE = /^[A-Za-z]:[\\/]/;
 
-// Grep prints "path:text" and Glob prints one path per line. Only prefixes that
-// exist as files are kept, so text from a matched line is never taken for a path.
+// Grep prints "path:text" and Glob prints one path per line, so each line names
+// one candidate: everything before the first colon (after a Windows drive letter),
+// or the whole line. Only candidates that exist as files are kept, so text from a
+// matched line is never taken for a path, and each is checked once.
 function matchedFiles(text, cwd, pathExists) {
-  const exists = (p) => Boolean(p) && pathExists(path.resolve(cwd || '.', p));
+  const checked = new Map();
   const found = new Set();
-  for (const line of text.split('\n')) {
+  for (const line of text.split('\n', MAX_LINES)) {
     if (found.size >= MAX_MATCHED) break;
-    const candidate = exists(line) ? line : line.slice(0, Math.max(line.indexOf(':'), 0));
-    if (exists(candidate)) found.add(candidate);
+    const colon = line.indexOf(':', DRIVE.test(line) ? 2 : 0);
+    const candidate = colon < 0 ? line : line.slice(0, colon);
+    if (!candidate) continue;
+    if (!checked.has(candidate)) checked.set(candidate, pathExists(path.resolve(cwd || '.', candidate)));
+    if (checked.get(candidate)) found.add(candidate);
   }
   return [...found];
 }
