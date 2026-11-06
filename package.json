@@ -1,9 +1,12 @@
 {
   "name": "node-code",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Claude Code plugin: live force-directed graph of your repository",
   "license": "MIT",
+  "bin": {
+    "node-code": "scripts/node-code.js"
+  },
   "engines": {
     "node": ">=20"
   },

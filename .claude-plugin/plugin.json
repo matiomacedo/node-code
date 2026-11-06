@@ -1,7 +1,7 @@
 {
   "name": "node-code",
   "displayName": "Node Code",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Live force-directed graph of your repository that lights up as Claude reads and edits files.",
   "license": "MIT",
   "keywords": [

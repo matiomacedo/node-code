@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "hooks": {
+    "PreToolUse": [
+      { "type": "command", "matcher": "Read|Edit|Write|Grep|Glob|Bash", "command": "node-code hook --agent copilot", "timeoutSec": 5 }
+    ],
+    "PostToolUse": [
+      { "type": "command", "matcher": "Read|Edit|Write|Grep|Glob|Bash", "command": "node-code hook --agent copilot", "timeoutSec": 5 }
+    ],
+    "PostToolUseFailure": [
+      { "type": "command", "matcher": "Read|Edit|Write|Grep|Glob|Bash", "command": "node-code hook --agent copilot", "timeoutSec": 5 }
+    ]
+  }
+}

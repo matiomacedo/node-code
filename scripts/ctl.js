@@ -115,12 +115,14 @@ async function stop(dataDir, root) {
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const flag = (name) => { const i = rest.indexOf(name); return i >= 0 ? rest[i + 1] : undefined; };
-  const dataDir = flag('--data') || process.env.CLAUDE_PLUGIN_DATA;
-  if (!dataDir) { console.log('node-code: plugin data directory not available'); return; }
+  // The Claude Code skills pass --data "${CLAUDE_PLUGIN_DATA}"; if that is empty, the
+  // hooks have no registry either, so a server started elsewhere would get no activity.
+  if (rest.includes('--data') && !flag('--data')) { console.log('node-code: plugin data directory not available'); return; }
+  const dataDir = flag('--data') || process.env.CLAUDE_PLUGIN_DATA || registry.defaultDataDir();
   const root = findRoot(flag('--cwd') || process.cwd());
   if (cmd === 'start') await start(dataDir, root, rest.includes('--no-open'));
   else if (cmd === 'stop') await stop(dataDir, root);
-  else console.log('usage: ctl.js start|stop --data <dir>');
+  else console.log('usage: node-code start|stop [--data <dir>]');
 }
 
 main();
