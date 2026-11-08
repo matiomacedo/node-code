@@ -1,6 +1,6 @@
 {
   "name": "node-code",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Live force-directed graph of your repository that lights up as Copilot reads and edits files.",
   "license": "MIT",
   "keywords": ["visualization", "graph", "codebase", "activity"],
