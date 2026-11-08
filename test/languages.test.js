@@ -88,6 +88,29 @@ test('Rust: mod and use, nested groups, pub items', () => {
   assert.deepEqual(resolve('src/main.rs', { spec: 'std::io' }, c), []);
 });
 
+test('Rust: super inside an inline test module is the file itself, not its parent', () => {
+  // `mod tests { use super::*; }` reaches the file's own items. Read as the parent module, it
+  // made every tested file look like it imported its mod.rs or main.rs: a false import cycle.
+  const src = "pub struct App;\n#[cfg(test)]\nmod tests {\n    use super::*;\n    use super::App;\n    use self::helpers::h;\n    use super::super::other::X;\n    use crate::util;\n    mod helpers {\n        use super::super::App;\n        pub fn h() {}\n    }\n}\n";
+  const c = ctx(['src/main.rs', 'src/app.rs', 'src/other.rs', 'src/util.rs']);
+  const targets = parse('src/app.rs', src).imports.flatMap((imp) => resolve('src/app.rs', imp, c));
+  assert.deepEqual([...new Set(targets)].sort(), ['src/other.rs', 'src/util.rs']);
+});
+
+test('Rust: a nested module file with inline tests does not import its mod.rs', () => {
+  const src = "pub fn connect() {}\n#[cfg(test)]\nmod tests {\n    use super::*;\n}\n";
+  const c = ctx(['src/main.rs', 'src/net/mod.rs', 'src/net/tcp.rs']);
+  const targets = parse('src/net/tcp.rs', src).imports.flatMap((imp) => resolve('src/net/tcp.rs', imp, c));
+  assert.deepEqual(targets, []);
+});
+
+test('Rust: super outside any inline module still means the parent module', () => {
+  const src = "use super::udp;\nmod inner {\n    pub fn f() {}\n}\nuse super::Thing;\n";
+  const c = ctx(['src/main.rs', 'src/net/mod.rs', 'src/net/tcp.rs', 'src/net/udp.rs']);
+  const targets = parse('src/net/tcp.rs', src).imports.flatMap((imp) => resolve('src/net/tcp.rs', imp, c));
+  assert.deepEqual(targets, ['src/net/udp.rs', 'src/net/mod.rs']);
+});
+
 test('Java, Kotlin and Scala: package index resolution', () => {
   const java = parse('src/com/a/App.java', 'package com.a;\nimport com.b.Util;\nimport static com.b.Util.helper;\nimport com.c.*;\n// import com.x.Nope;\npublic class App {}\nclass Hidden {}\n');
   assert.equal(java.pkg, 'com.a');
