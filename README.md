@@ -4,7 +4,7 @@ A plugin for Claude Code, GitHub Copilot CLI, OpenCode and Ana that shows your r
 
 ![The repository as a force-directed graph, with folders as hubs and files around them](docs/screenshots/graph-overview.png)
 
-Building the graph is local and uses no model tokens. Nothing leaves your machine: the server listens on 127.0.0.1 only. Hooks send it file paths, search patterns, and the first 300 characters of Bash commands and of error messages from failed calls. File contents and successful tool output are dropped before anything is sent.
+Building the graph is local and uses no model tokens. Nothing leaves your machine: the server listens on 127.0.0.1 only. Hooks send it file paths, search patterns, and the first 300 characters of Bash commands and of error messages from failed calls (Ana sends whole commands). File contents and successful tool output are dropped before anything is sent.
 
 ## Install
 
@@ -12,7 +12,7 @@ Requires Node 20 or later (tested on 24), and Claude Code 2.1.318, Copilot CLI 1
 
 ### The `node-code` command
 
-Starts and stops the map from a terminal, at no token cost. Copilot CLI and OpenCode need it; for Claude Code it is optional.
+Starts and stops the map from a terminal, at no token cost. Copilot CLI, OpenCode and Ana need it; for Claude Code it is optional.
 
 ```bash
 npm install -g github:matiomacedo/node-code
@@ -101,7 +101,7 @@ Or start it from inside an agent, which costs one small model turn:
 | Copilot CLI | ask for the `codebase-map` skill | ask for the `codebase-map-stop` skill |
 | OpenCode | `/codebase-map` | `/codebase-map-stop` |
 
-Starting reuses a server that is already running, and only opens a tab if none is connected. A map started with Claude Code's command shows only Claude Code, because only Claude Code can find it; one started any other way shows all three agents.
+Starting reuses a server that is already running, and only opens a tab if none is connected. A map started with Claude Code's command shows only Claude Code, because only Claude Code can find it; one started any other way shows all four agents.
 
 Claude Code namespaces plugin commands. Typing `/codebase-map` and pressing Enter works in an interactive session, because autocomplete selects the full name. It does not work in `claude -p`, where you must use the full name.
 
