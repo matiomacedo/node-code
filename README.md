@@ -1,6 +1,6 @@
 # node-code
 
-A plugin for Claude Code, GitHub Copilot CLI and OpenCode that shows your repository as a live force-directed graph in a local web page. Nodes light up as the agent reads and edits files, and clicking a file shows its details and dependencies.
+A plugin for Claude Code, GitHub Copilot CLI, OpenCode and Ana that shows your repository as a live force-directed graph in a local web page. Nodes light up as the agent reads and edits files, and clicking a file shows its details and dependencies.
 
 ![The repository as a force-directed graph, with folders as hubs and files around them](docs/screenshots/graph-overview.png)
 
@@ -68,10 +68,20 @@ cp "$NC/node-code.js" ~/.config/opencode/plugins/
 cp "$NC"/commands/*.md ~/.config/opencode/commands/
 ```
 
+### Ana
+
+Copy the plugin into Ana's plugin folder (`$ANA_HOME/plugins`, by default `~/.ana/plugins`), then restart Ana's backend so it loads. Ana has no command to start the map: use `node-code start`.
+
+```bash
+mkdir -p ~/.ana/plugins
+cp -R "$(npm root -g)/node-code/ana/node-code" ~/.ana/plugins/
+```
+
 ### Differences from Claude Code
 
 - **Copilot** edits through `apply_patch`. A patch that touches several files pulses the first one and refreshes the rest; deleted files leave the graph on the next scan, within 30 seconds. A shell command that exits non-zero shows as failed. Copilot waits for its hooks, which adds about 20 ms before and after each file or shell tool call.
 - **OpenCode** runs `node-code` once per tool event, as Claude Code's hooks do. If `node-code` is not on the `PATH` that OpenCode sees, nothing is shown and nothing breaks. Its `patch` tool, offered only to some models, is mapped like Copilot's but was not seen in testing.
+- **Ana** runs `node-code` once per tool event from a Python plugin, without waiting for it. If `node-code` is not on the `PATH` that Ana's backend sees, nothing is shown and nothing breaks. `rename_file` shows as creating the new path; the old path, and files removed with `delete_file`, leave the graph on the next scan, within 30 seconds. A call that a `hooks.toml` hook blocks, or whose tool raises instead of returning an error, shows no end or failure: Ana runs no after hook for it, so it shows as started until it expires. Its payloads were captured by running Ana's tools directly, not from a live session.
 
 ## Usage
 
