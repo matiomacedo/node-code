@@ -14,7 +14,7 @@ const hookAt = performance.timeOrigin;
 
 // Other agents name themselves with --agent; their payloads are mapped to Claude
 // Code's shape first. Without it, this is Claude Code's hook.
-const ADAPTERS = { copilot: '../adapters/copilot', opencode: '../adapters/opencode' };
+const ADAPTERS = { copilot: '../adapters/copilot', opencode: '../adapters/opencode', ana: '../adapters/ana' };
 const flagAt = process.argv.indexOf('--agent');
 const agent = flagAt >= 0 ? process.argv[flagAt + 1] : null;
 

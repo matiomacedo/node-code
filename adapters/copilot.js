@@ -67,4 +67,4 @@ function toClaude(raw, { pathExists = () => false } = {}) {
   }
 }
 
-module.exports = { toClaude };
+module.exports = { toClaude, matchedFiles };

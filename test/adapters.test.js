@@ -11,6 +11,7 @@ const { RepoIndex } = require('../server/repo-index');
 const { normalize } = require('../server/normalize');
 const copilot = require('../adapters/copilot');
 const opencode = require('../adapters/opencode');
+const ana = require('../adapters/ana');
 
 const load = (name) => fs.readFileSync(path.join(__dirname, 'fixtures', name), 'utf8')
   .trim().split('\n').map((l) => JSON.parse(l));
@@ -256,6 +257,78 @@ test('opencode', async (t) => {
     for (const raw of fixtures) {
       const text = JSON.stringify(extract(opencode.toClaude(raw)));
       assert.ok(!text.includes('export const'), raw.event.tool);
+    }
+  });
+});
+
+test('ana', async (t) => {
+  const fixtures = load('ana-payloads.jsonl');
+  const find = (phase, tool, pred = () => true) =>
+    fixtures.find((p) => p.phase === phase && p.tool === tool && pred(p));
+  const ev = (phase, tool, pred) => run(ana, find(phase, tool, pred));
+
+  await t.test('a read pairs its start and end by id and reads the file', () => {
+    const start = ev('before', 'read_file');
+    const end = ev('after', 'read_file');
+    assert.equal(start.phase, 'start');
+    assert.equal(end.phase, 'end');
+    assert.equal(start.id, end.id);
+    assert.equal(start.session, 'ses_ana_1');
+    assert.equal(end.kind, 'read');
+    assert.deepEqual(paths(end), ['read src/a.js']);
+  });
+
+  await t.test('a read that failed is a failure with its error', () => {
+    const end = ev('after', 'read_file', (p) => !p.result.success);
+    assert.equal(end.phase, 'fail');
+    assert.equal(end.error, 'Not found: /repo/src/missing.js');
+  });
+
+  await t.test('a grep reads the folder it searched and the files it matched', () => {
+    const end = ev('after', 'grep');
+    assert.equal(end.kind, 'search');
+    assert.deepEqual(paths(end), ['read .', 'read src/a.js', 'read src/b.js']);
+  });
+
+  await t.test('a glob reads the folder it searched and the files it matched', () => {
+    const end = ev('after', 'glob');
+    assert.equal(end.kind, 'search');
+    assert.deepEqual(paths(end), ['read .', 'read src/a.js', 'read src/b.js']);
+  });
+
+  await t.test('edit_file and multi_edit are edits of their file', () => {
+    for (const tool of ['edit_file', 'multi_edit']) {
+      const end = ev('after', tool);
+      assert.equal(end.kind, 'edit', tool);
+      assert.deepEqual(paths(end), ['edit src/a.js'], tool);
+    }
+  });
+
+  await t.test('a write of a new file is a create, and over an existing one an edit', () => {
+    assert.deepEqual(paths(ev('after', 'write_file', (p) => p.created)), ['create src/c.js']);
+    assert.deepEqual(paths(ev('after', 'write_file', (p) => !p.created)), ['edit src/c.js']);
+  });
+
+  await t.test('a rename creates the file at its new path', () => {
+    const msg = extract(ana.toClaude(find('after', 'rename_file')));
+    assert.equal(msg.tool, 'Edit');
+    assert.equal(msg.filePath, 'src/d.js');
+    assert.deepEqual(msg.changed, { files: ['src/d.js'], created: ['src/d.js'] });
+  });
+
+  await t.test('a shell command is Bash, and one that exits non-zero a failure', () => {
+    const fail = ev('after', 'shell_command', (p) => !p.result.success);
+    assert.equal(fail.kind, 'bash');
+    assert.equal(fail.phase, 'fail');
+    assert.equal(fail.label, 'cat does-not-exist.txt');
+    assert.match(fail.error, /Exit code: 1/);
+    assert.equal(ev('after', 'shell_command', (p) => p.result.success).phase, 'end');
+  });
+
+  await t.test('no file content or tool output survives', () => {
+    for (const raw of fixtures) {
+      const text = JSON.stringify(extract(ana.toClaude(raw, { pathExists: exists })));
+      assert.ok(!text.includes('export const') && !text.includes('console.log'), raw.tool);
     }
   });
 });

@@ -128,6 +128,29 @@ test('--agent opencode maps the plugin event and posts it to the server in NODE_
   assert.equal(bodies[0].msg.filePath, 'src/a.js');
 });
 
+test('--agent ana maps the plugin event and posts it to the server in NODE_CODE_DATA', async (t) => {
+  const root = tmp('nc-ana-');
+  const data = tmp('nc-ana-data-');
+  fs.mkdirSync(path.join(root, 'src'));
+  fs.writeFileSync(path.join(root, 'src/a.js'), 'x');
+  const bodies = await fakeServer(t, data, root);
+  const payload = { phase: 'before', directory: root, session: 's', id: 'call_1', tool: 'read_file', args: { path: 'src/a.js' } };
+  assert.equal(await runHook(['--agent', 'ana'], envWith({ NODE_CODE_DATA: data }), JSON.stringify(payload)), 0);
+  assert.equal(bodies.length, 1);
+  assert.equal(bodies[0].msg.tool, 'Read');
+  assert.equal(bodies[0].msg.filePath, 'src/a.js');
+});
+
+test('install-ana copies the plugin into ANA_HOME with absolute paths to node and the hook', () => {
+  const home = tmp('nc-ana-home-');
+  execFileSync(process.execPath, [BIN, 'install-ana'], { env: envWith({ ANA_HOME: home }) });
+  const dir = path.join(home, 'plugins', 'node-code');
+  assert.equal(fs.readFileSync(path.join(dir, '__init__.py'), 'utf8'),
+    fs.readFileSync(path.join(PLUGIN, 'ana/node-code/__init__.py'), 'utf8'));
+  const { command } = JSON.parse(fs.readFileSync(path.join(dir, 'command.json'), 'utf8'));
+  assert.deepEqual(command, [process.execPath, path.join(PLUGIN, 'scripts/hook.js'), '--agent', 'ana']);
+});
+
 test('an unknown --agent is a no-op that exits 0', async (t) => {
   const root = tmp('nc-bogus-');
   const data = tmp('nc-bogus-data-');
