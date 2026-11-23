@@ -141,6 +141,16 @@ test('--agent ana maps the plugin event and posts it to the server in NODE_CODE_
   assert.equal(bodies[0].msg.filePath, 'src/a.js');
 });
 
+test('install-ana copies the plugin into ANA_HOME with absolute paths to node and the hook', () => {
+  const home = tmp('nc-ana-home-');
+  execFileSync(process.execPath, [BIN, 'install-ana'], { env: envWith({ ANA_HOME: home }) });
+  const dir = path.join(home, 'plugins', 'node-code');
+  assert.equal(fs.readFileSync(path.join(dir, '__init__.py'), 'utf8'),
+    fs.readFileSync(path.join(PLUGIN, 'ana/node-code/__init__.py'), 'utf8'));
+  const { command } = JSON.parse(fs.readFileSync(path.join(dir, 'command.json'), 'utf8'));
+  assert.deepEqual(command, [process.execPath, path.join(PLUGIN, 'scripts/hook.js'), '--agent', 'ana']);
+});
+
 test('an unknown --agent is a no-op that exits 0', async (t) => {
   const root = tmp('nc-bogus-');
   const data = tmp('nc-bogus-data-');

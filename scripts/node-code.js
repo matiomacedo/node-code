@@ -3,5 +3,7 @@
 // The global command for agents other than Claude Code:
 //   node-code start|stop [--cwd <dir>] [--no-open]
 //   node-code hook --agent <name>   (reads the agent's hook payload on stdin)
+//   node-code install-ana           (installs the Ana plugin into $ANA_HOME/plugins)
 if (process.argv[2] === 'hook') require('./hook');
+else if (process.argv[2] === 'install-ana') require('./install-ana');
 else require('./ctl');
